@@ -1,4 +1,4 @@
-"""Post-registration finalization, optimization, camera status diagnosis, and stats."""
+"""Final optimization, camera status classification, and output statistics."""
 
 from __future__ import annotations
 

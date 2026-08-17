@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import itertools
-from typing import Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 import numpy as np
 

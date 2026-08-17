@@ -1,4 +1,4 @@
-"""Graph connectivity, failure stats, and diagnostic helpers for SfM."""
+"""View-graph connectivity and reconstruction failure statistics."""
 
 from __future__ import annotations
 

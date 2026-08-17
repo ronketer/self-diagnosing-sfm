@@ -1,4 +1,4 @@
-"""Incremental Structure-from-Motion pipeline orchestration."""
+"""High-level incremental Structure-from-Motion stage sequencing."""
 
 from __future__ import annotations
 

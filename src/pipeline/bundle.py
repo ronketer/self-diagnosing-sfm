@@ -1,4 +1,4 @@
-"""Bundle adjustment numerical boundary execution for SfM pipeline."""
+"""Boundary between typed ReconstructionState and numerical bundle adjustment."""
 
 from __future__ import annotations
 

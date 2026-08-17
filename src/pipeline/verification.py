@@ -1,4 +1,4 @@
-"""Pairwise geometric verification for Structure-from-Motion."""
+"""Pairwise geometric verification before feature-track construction."""
 
 from __future__ import annotations
 

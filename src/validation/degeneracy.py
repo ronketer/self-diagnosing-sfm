@@ -18,10 +18,6 @@ def check_ground_truth_baseline(t: np.ndarray, min_baseline: float = 1e-4) -> bo
     return float(np.linalg.norm(t)) < min_baseline
 
 
-# Alias for backwards compatibility in synthetic tests; documented as synthetic-only
-check_pure_rotation = check_ground_truth_baseline
-
-
 def evaluate_homography_support(
     pts_px1: np.ndarray,
     pts_px2: np.ndarray,

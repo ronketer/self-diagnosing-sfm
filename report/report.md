@@ -10,12 +10,12 @@ from overlapping images. It combines many of the central topics in 3D computer
 vision: local features, robust epipolar geometry, triangulation, camera
 resectioning, and nonlinear optimization.
 
-This project implements a complete **incremental SfM pipeline from scratch**.
-The normalized 8-point essential-matrix estimator, RANSAC, cheirality-based pose
-recovery, multi-view DLT triangulation, conditioned DLT PnP, local nonlinear PnP
-refinement, track management, outlier filtering, bundle adjustment, alignment,
-and evaluation are implemented in NumPy and SciPy. OpenCV is used only for SIFT
-feature detection and descriptor matching.
+This project implements a complete **robust incremental SfM pipeline**.
+The normalized 8-point essential-matrix estimator, Sampson RANSAC, cheirality-based pose
+recovery, multi-view DLT triangulation, feature-track graph management, outlier
+filtering, bundle adjustment residual integration, Sim(3) Umeyama alignment, and
+evaluation are implemented in NumPy and SciPy. OpenCV is used for SIFT feature detection,
+descriptor matching, and production PnP camera resectioning.
 
 The project makes four experimental contributions:
 
@@ -80,9 +80,13 @@ angle.
 
 ### 2.4 Incremental registration
 
-Initialization considers well-supported verified pairs and chooses the pair
-with the largest median triangulation angle. This favors a well-conditioned
-baseline rather than simply selecting the pair with the most matches.
+Initialization evaluates verified candidate pairs against strict geometric quality
+gates (minimum inliers, parallax angle $\ge 2^\circ$, cheirality $\ge 75\%$, low
+reprojection/Sampson error, and absence of planar homography dominance). Candidate
+pairs are ranked using an expansion-aware score that balances geometric baseline
+strength with expansion support (the number of triangulatable 2D↔3D correspondences
+provided to subsequent unregistered views). This prevents selecting an isolated
+high-parallax pair that cannot bridge to a third camera.
 
 Each subsequent image is selected by the number of correspondences to existing
 3D tracks. Its pose is estimated by a conditioned 6-point DLT inside PnP
@@ -197,7 +201,7 @@ are localized rather than growing monotonically along the full sequence.*
 |---|---|---:|---:|---:|---:|---:|---:|
 | TempleRing | Middlebury calibration | **47/47** | 13,811 | **0.383** | **0.265° / 0.776°** | **0.130%** | 6.1 min |
 | Truck | COLMAP estimate | **84/84** | 49,641 | **0.520** | **0.055° / 0.172°** | **0.024%** | 4.28 h |
-| TempleSparseRing | Middlebury calibration | **3/16** | 208 | 0.280 | 10.351° / 10.397° | — | — |
+| TempleSparseRing | Middlebury calibration | **4/16** | 655 | **0.238** | **0.217° / 0.243°** | **0.010%** | 8.2 s |
 
 ![Truck reconstruction](figures/truck_reconstruction.png)
 
@@ -206,11 +210,14 @@ larger real sequence and closely reproduce external COLMAP camera estimates.
 It also exposes the present scalability limitation: exhaustive pair matching
 and repeated global BA increase runtime from minutes to 4.28 hours.
 
-TempleSparseRing fails after three cameras because its approximately 22° view
-spacing provides too little reliable SIFT overlap. Its 0.280 px RMS is lower
-than the successful TempleRing result, yet its rotation error is about 10.35°
-and 81% of cameras are missing. This is direct evidence that reprojection error
-alone is not a reconstruction-quality metric.
+TempleSparseRing registers 4 of 16 cameras (cameras 0, 1, 9, 10) and reconstructs
+655 points before halting due to a disconnected match graph (`NO_2D3D_BRIDGE`).
+Its approximately 22° view spacing provides too little wide-baseline SIFT overlap
+to bridge the 8 separate view-graph components. Strikingly, its 0.238 px RMS is lower
+than the successful TempleRing result (0.383 px) and its mean rotation error across
+registered views is only 0.217°, yet 75% of cameras remain unregistered. This provides
+direct empirical evidence that reprojection error alone is not a sufficient reconstruction-quality
+metric and must always be evaluated alongside coverage and graph connectivity.
 
 ### 4.3 Ablation study
 

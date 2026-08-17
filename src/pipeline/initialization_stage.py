@@ -1,4 +1,4 @@
-"""Pipeline orchestration for the two-view initialization stage."""
+"""Pipeline-level two-view initialization and creation of the first map."""
 
 from __future__ import annotations
 

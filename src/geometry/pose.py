@@ -25,17 +25,3 @@ def umeyama(src: np.ndarray, dst: np.ndarray) -> tuple[float, np.ndarray, np.nda
     s = np.trace(np.diag(D) @ S) / max(var_s, 1e-15)
     t = mu_d - s * R @ mu_s
     return float(s), R, t
-
-
-def relative_pose(
-    R1: np.ndarray, t1: np.ndarray, R2: np.ndarray, t2: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute relative pose from camera 1 to camera 2.
-
-    X_cam1 = R1 @ X_w + t1
-    X_cam2 = R2 @ X_w + t2 = R2 @ R1.T @ (X_cam1 - t1) + t2
-           = (R2 @ R1.T) @ X_cam1 + (t2 - R2 @ R1.T @ t1)
-    """
-    R_rel = R2 @ R1.T
-    t_rel = t2 - R_rel @ t1
-    return R_rel, t_rel

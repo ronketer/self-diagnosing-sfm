@@ -1,4 +1,4 @@
-"""Incremental camera selection and registration helpers."""
+"""Incremental camera registration against the existing 3D map."""
 
 from __future__ import annotations
 

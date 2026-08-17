@@ -1,4 +1,4 @@
-"""Reconstruction state operations: observations, RMS, triangulation, and pruning."""
+"""Typed reconstruction operations: triangulation, pruning, and reprojection."""
 
 from __future__ import annotations
 

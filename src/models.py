@@ -19,7 +19,7 @@ at solver boundaries.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -351,8 +351,7 @@ class Reconstruction:
         keep = np.asarray(keep, dtype=bool).reshape(-1)
         if len(keep) != len(self.landmarks):
             raise ValueError(
-                f"keep mask has {len(keep)} entries for "
-                f"{len(self.landmarks)} landmarks"
+                f"keep mask has {len(keep)} entries for {len(self.landmarks)} landmarks"
             )
 
         remap = -np.ones(len(keep), dtype=np.int64)
@@ -387,10 +386,10 @@ class ReconstructionState:
     """
 
     reconstruction: Reconstruction
-    track_manager: "TrackManager"
+    track_manager: TrackManager
     keypoints: list[np.ndarray]
-    config: "SfMConfig"
-    diagnostics: "ReconstructionDiagnostics"
+    config: SfMConfig
+    diagnostics: ReconstructionDiagnostics
 
     registration_order: list[int] = field(default_factory=list)
     anchor_camera: int | None = None

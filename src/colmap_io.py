@@ -5,6 +5,7 @@ Format reference: COLMAP src/colmap/scene/reconstruction_io.cc
 
 import struct
 from pathlib import Path
+
 import numpy as np
 
 from .models import UnsupportedCameraModelError
