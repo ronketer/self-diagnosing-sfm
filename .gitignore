@@ -1,3 +1,6 @@
 data/
 output/
 *.zip
+__pycache__/
+*.py[cod]
+.venv/
