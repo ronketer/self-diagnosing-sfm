@@ -9,7 +9,7 @@ from .reconstruction_ops import (
     prune_outliers,
     triangulate_new_landmarks,
 )
-from .registration import choose_next_camera
+from .registration import choose_next_camera, run_incremental_registration
 from .verification import _sampson_thresh, verify_match_graph
 
 __all__ = [
@@ -21,6 +21,7 @@ __all__ = [
     "compute_reprojection_rms",
     "compute_view_graph_components",
     "prune_outliers",
+    "run_incremental_registration",
     "run_sfm",
     "triangulate_new_landmarks",
     "verify_match_graph",
