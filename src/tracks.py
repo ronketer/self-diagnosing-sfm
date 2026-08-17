@@ -1,24 +1,55 @@
-"""Feature tracks: union-find over (image, keypoint) observations."""
+"""Feature tracks: conflict-aware union-find over (image, keypoint) observations."""
+
+from __future__ import annotations
 
 import numpy as np
 
 
-class UnionFind:
-    def __init__(self):
-        self.parent = {}
+class ConflictAwareUnionFind:
+    """Union-Find data structure that enforces at most one observation per image per track."""
 
-    def find(self, x):
+    def __init__(self):
+        self.parent: dict[tuple[int, int], tuple[int, int]] = {}
+        # Maps root -> set of image indices present in the component
+        self.images_per_root: dict[tuple[int, int], set[int]] = {}
+
+    def find(self, x: tuple[int, int]) -> tuple[int, int]:
+        if x not in self.parent:
+            self.parent[x] = x
+            self.images_per_root[x] = {x[0]}
+            return x
         root = x
-        while self.parent.setdefault(root, root) != root:
+        while self.parent[root] != root:
             root = self.parent[root]
-        while self.parent[x] != root:  # path compression
-            self.parent[x], x = root, self.parent[x]
+        # Path compression
+        curr = x
+        while curr != root:
+            nxt = self.parent[curr]
+            self.parent[curr] = root
+            curr = nxt
         return root
 
-    def union(self, a, b):
-        ra, rb = self.find(a), self.find(b)
-        if ra != rb:
-            self.parent[rb] = ra
+    def union(self, a: tuple[int, int], b: tuple[int, int]) -> bool:
+        """Attempt to join components containing a and b.
+
+        Returns True if merged, False if rejected due to conflict (same image).
+        """
+        ra = self.find(a)
+        rb = self.find(b)
+        if ra == rb:
+            return True  # Already connected
+
+        # Conflict check: do both components contain observations from the same image?
+        imgs_a = self.images_per_root[ra]
+        imgs_b = self.images_per_root[rb]
+        if imgs_a & imgs_b:
+            return False  # Reject conflicting match edge
+
+        # Merge rb into ra
+        self.parent[rb] = ra
+        self.images_per_root[ra] = imgs_a | imgs_b
+        del self.images_per_root[rb]
+        return True
 
 
 class Track:
@@ -30,15 +61,19 @@ class Track:
 
 
 class TrackManager:
-    """Builds consistent multi-view tracks from a pairwise match graph."""
+    """Builds conflict-free multi-view tracks from a pairwise match graph."""
 
     def __init__(self, match_graph: dict[tuple[int, int], np.ndarray]):
-        uf = UnionFind()
+        uf = ConflictAwareUnionFind()
+        self.n_rejected_edges = 0
+
         for (i, j), matches in match_graph.items():
             for qi, ti in matches:
-                uf.union((i, int(qi)), (j, int(ti)))
+                merged = uf.union((i, int(qi)), (j, int(ti)))
+                if not merged:
+                    self.n_rejected_edges += 1
 
-        groups: dict[tuple, list[tuple[int, int]]] = {}
+        groups: dict[tuple[int, int], list[tuple[int, int]]] = {}
         for obs in uf.parent:
             groups.setdefault(uf.find(obs), []).append(obs)
 
@@ -46,15 +81,8 @@ class TrackManager:
         for members in groups.values():
             if len(members) < 2:
                 continue
-            obs = {}
-            consistent = True
-            for img, kp in members:
-                if img in obs:  # same image twice -> ambiguous track
-                    consistent = False
-                    break
-                obs[img] = kp
-            if consistent:
-                self.tracks.append(Track(obs))
+            obs = {img: kp for img, kp in members}
+            self.tracks.append(Track(obs))
 
         # img_idx -> list of track indices observing it
         self._by_image: dict[int, list[int]] = {}

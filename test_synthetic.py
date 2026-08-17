@@ -1,4 +1,4 @@
-"""Synthetic sanity checks for the from-scratch geometry."""
+"""Synthetic sanity checks and comprehensive test suite for 3D reconstruction."""
 
 import numpy as np
 
@@ -7,9 +7,39 @@ from src.bundle_adjustment import (
     rodrigues_to_R,
     run_bundle_adjustment,
 )
-from src.geometry import choose_pose, decompose_essential, ransac_essential
-from src.pnp import ransac_pnp
-from src.triangulation import reproject, triangulate_two_view
+from src.config import SfMConfig
+from src.geometry.essential import (
+    choose_pose,
+    decompose_essential,
+    ransac_essential,
+)
+from src.geometry.projection import reproject
+from src.pnp import estimate_camera_pose, ransac_pnp
+from src.triangulation import triangulate_two_view
+from tests.synthetic.test_degeneracies import (
+    test_planar_scene_degeneracy,
+    test_pnp_with_gross_outliers,
+    test_points_behind_camera,
+    test_pure_rotation_and_zero_baseline,
+)
+from tests.unit.test_essential import (
+    test_essential_matrix_properties,
+    test_hartley_normalize,
+)
+from tests.unit.test_projection import (
+    test_camera_center,
+    test_point_depths,
+    test_to_normalized_and_reproject,
+    test_triangulation_angles,
+)
+from tests.unit.test_tracks import (
+    test_conflict_aware_union_find,
+    test_track_manager_invariant,
+)
+from tests.unit.test_triangulation import (
+    test_triangulate_track_validation,
+    test_two_view_and_multi_view_dlt,
+)
 
 rng = np.random.default_rng(42)
 
@@ -67,12 +97,21 @@ def test_triangulation():
 def test_pnp():
     K, X, _, (R2, t2) = make_scene()
     x2 = reproject(K, R2, t2, X)
-    res = ransac_pnp(X, x2, K)
-    assert res is not None
-    R, t, mask = res
-    assert np.allclose(R, R2, atol=1e-6), "PnP rotation mismatch"
-    assert np.allclose(t, t2, atol=1e-6), f"PnP translation mismatch: {t} vs {t2}"
-    print("PnP: OK")
+
+    # Scratch reference PnP
+    res_sc = ransac_pnp(X, x2, K)
+    assert res_sc is not None
+    R_sc, t_sc, mask_sc = res_sc
+    assert np.allclose(R_sc, R2, atol=1e-5), "Scratch PnP rotation mismatch"
+    assert np.allclose(t_sc, t2, atol=1e-5), f"Scratch PnP translation mismatch: {t_sc} vs {t2}"
+
+    # OpenCV production PnP
+    res_cv = estimate_camera_pose(X, x2, K, SfMConfig())
+    assert res_cv.accepted, f"OpenCV PnP rejected: {res_cv.reason}"
+    assert res_cv.pose is not None
+    assert np.allclose(res_cv.pose.R, R2, atol=1e-5), "OpenCV PnP rotation mismatch"
+    assert np.allclose(res_cv.pose.t, t2, atol=1e-5), f"OpenCV PnP translation mismatch: {res_cv.pose.t} vs {t2}"
+    print("PnP (OpenCV + scratch): OK")
 
 
 def test_bundle_adjustment():
@@ -95,11 +134,33 @@ def test_bundle_adjustment():
     X_pert = X + rng.normal(scale=0.02, size=X.shape)
 
     poses_opt, X_opt, rms_before, rms_after = run_bundle_adjustment(
-        K, poses_pert, X_pert, obs
+        K, poses_pert, X_pert, obs, anchor_camera=0, scale_camera=1
     )
     assert rms_before > 1.0, f"perturbation too small ({rms_before})"
     assert rms_after < 1e-4, f"BA did not converge (rms {rms_after})"
     print(f"bundle adjustment: OK (rms {rms_before:.2f} -> {rms_after:.2e} px)")
+
+
+def run_unit_tests():
+    test_to_normalized_and_reproject()
+    test_camera_center()
+    test_point_depths()
+    test_triangulation_angles()
+    test_hartley_normalize()
+    test_essential_matrix_properties()
+    test_two_view_and_multi_view_dlt()
+    test_triangulate_track_validation()
+    test_conflict_aware_union_find()
+    test_track_manager_invariant()
+    print("unit tests: OK")
+
+
+def run_degeneracy_tests():
+    test_pure_rotation_and_zero_baseline()
+    test_planar_scene_degeneracy()
+    test_points_behind_camera()
+    test_pnp_with_gross_outliers()
+    print("degeneracy tests: OK")
 
 
 if __name__ == "__main__":
@@ -108,4 +169,6 @@ if __name__ == "__main__":
     test_essential_and_pose()
     test_pnp()
     test_bundle_adjustment()
-    print("all synthetic tests passed")
+    run_unit_tests()
+    run_degeneracy_tests()
+    print("all synthetic and unit tests passed")

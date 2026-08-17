@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from src.dataset import load_dataset
-from src.evaluation import evaluate
+from src.evaluation import evaluate, save_diagnostics_json, save_reconstruction_json
 from src.features import build_match_graph, detect_features
 from src.sfm import run_sfm
 from src.visualization import (
@@ -80,6 +80,8 @@ def main():
         metrics = evaluate(recon, gts, stats, out_dir)
         print((out_dir / "metrics.txt").read_text())
     else:
+        save_diagnostics_json(stats, out_dir / "diagnostics.json")
+        save_reconstruction_json(recon, stats, out_dir / "reconstruction.json")
         print("no ground truth for this dataset; skipping pose evaluation")
 
     # figures

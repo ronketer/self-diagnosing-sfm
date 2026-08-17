@@ -1,35 +1,71 @@
-"""Evaluation against Middlebury ground truth."""
+"""Evaluation against Middlebury ground truth and quality reporting."""
+
+from __future__ import annotations
 
 import json
 from pathlib import Path
-
+from typing import Any
 import numpy as np
 
-
-def umeyama(src: np.ndarray, dst: np.ndarray):
-    """Similarity transform (s, R, t) minimizing ||s R src + t - dst||^2."""
-    mu_s, mu_d = src.mean(axis=0), dst.mean(axis=0)
-    sc, dc = src - mu_s, dst - mu_d
-    cov = dc.T @ sc / len(src)
-    U, D, Vt = np.linalg.svd(cov)
-    S = np.eye(3)
-    if np.linalg.det(U) * np.linalg.det(Vt) < 0:
-        S[2, 2] = -1
-    R = U @ S @ Vt
-    var_s = (sc**2).sum() / len(src)
-    s = np.trace(np.diag(D) @ S) / var_s
-    t = mu_d - s * R @ mu_s
-    return s, R, t
+from .geometry.pose import rotation_error_deg, umeyama
 
 
-def rotation_error_deg(R1: np.ndarray, R2: np.ndarray) -> float:
-    cos = np.clip((np.trace(R1 @ R2.T) - 1) / 2, -1, 1)
-    return float(np.degrees(np.arccos(cos)))
+def save_reconstruction_json(recon, stats: dict, out_path: Path) -> None:
+    """Save camera poses, intrinsics, and summary into a machine-readable JSON."""
+    reg = sorted(recon.poses)
+    cameras = []
+    for i in reg:
+        R, t = recon.poses[i]
+        C = -R.T @ t
+        cameras.append(
+            {
+                "image_id": int(i),
+                "R": R.tolist(),
+                "t": t.tolist(),
+                "center": C.tolist(),
+            }
+        )
+
+    data = {
+        "intrinsics": {"K": recon.K.tolist()},
+        "registration_order": [int(x) for x in stats.get("registration_order", [])],
+        "registered_cameras": cameras,
+        "n_points": int(len(recon.points3d)),
+        "reprojection_rms_px": stats.get("rms_final"),
+    }
+    out_path.write_text(json.dumps(data, indent=2))
+
+
+def save_diagnostics_json(stats: dict, out_path: Path) -> None:
+    """Save detailed diagnostic events and rejection causes into diagnostics.json."""
+    diag = stats.get("diagnostics")
+    if diag is not None and hasattr(diag, "to_dict"):
+        data = diag.to_dict()
+    else:
+        init_pair = stats.get("registration_order", [0, 1])[:2]
+        data = {
+            "summary": {
+                "initial_pair": [int(x) for x in init_pair],
+                "registered_images": int(stats.get("n_registered", 0)),
+                "total_images": int(stats.get("n_images", 0)),
+                "landmarks": int(stats.get("n_points", 0)),
+                "final_reprojection_rms_px": stats.get("rms_final"),
+            },
+            "rejections": [],
+            "initial_pair_evaluations": [],
+            "events": [],
+        }
+    out_path.write_text(json.dumps(data, indent=2))
 
 
 def evaluate(recon, gts, stats: dict, out_dir: Path) -> dict:
     """Align estimated camera centers to GT via Umeyama, report per-camera
-    rotation and center errors. Writes metrics.json / metrics.txt."""
+    rotation and center errors. Writes metrics.json / metrics.txt / diagnostics.json / reconstruction.json."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    save_diagnostics_json(stats, out_dir / "diagnostics.json")
+    save_reconstruction_json(recon, stats, out_dir / "reconstruction.json")
+
     reg = sorted(recon.poses)
     C_est = np.array([recon.camera_center(i) for i in reg])
     C_gt = np.array([gts[i].center for i in reg])
@@ -91,7 +127,6 @@ def evaluate(recon, gts, stats: dict, out_dir: Path) -> dict:
         "alignment": {"scale": float(s)},
     }
 
-    out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
     lines = [

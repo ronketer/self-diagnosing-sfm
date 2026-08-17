@@ -1,23 +1,16 @@
-"""Two-view geometry from scratch: essential matrix, RANSAC, pose recovery."""
+"""Two-view essential matrix estimation, decomposition, and pose selection."""
 
 import numpy as np
 
 rng = np.random.default_rng(0)
 
 
-def to_normalized(pts: np.ndarray, K: np.ndarray) -> np.ndarray:
-    """Pixel coords (N,2) -> normalized camera coords (N,2) via K^-1."""
-    ph = np.hstack([pts, np.ones((len(pts), 1))])
-    xn = (np.linalg.inv(K) @ ph.T).T
-    return xn[:, :2] / xn[:, 2:3]
-
-
 def hartley_normalize(pts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Translate to centroid, scale mean distance to sqrt(2). Returns (pts_n, T)."""
+    """Translate to centroid and scale mean distance to sqrt(2). Returns (pts_n, T)."""
     c = pts.mean(axis=0)
     d = np.linalg.norm(pts - c, axis=1).mean()
     s = np.sqrt(2) / max(d, 1e-12)
-    T = np.array([[s, 0, -s * c[0]], [0, s, -s * c[1]], [0, 0, 1]])
+    T = np.array([[s, 0.0, -s * c[0]], [0.0, s, -s * c[1]], [0.0, 0.0, 1.0]])
     ph = np.hstack([pts, np.ones((len(pts), 1))])
     return (T @ ph.T).T[:, :2], T
 
@@ -39,7 +32,8 @@ def estimate_essential_8pt(x1: np.ndarray, x2: np.ndarray) -> np.ndarray:
     E = T2.T @ E @ T1  # undo conditioning
     U, _, Vt = np.linalg.svd(E)
     E = U @ np.diag([1.0, 1.0, 0.0]) @ Vt
-    return E / np.linalg.norm(E)
+    norm = np.linalg.norm(E)
+    return E / norm if norm > 1e-12 else E
 
 
 def sampson_distance(E: np.ndarray, x1: np.ndarray, x2: np.ndarray) -> np.ndarray:
@@ -61,10 +55,11 @@ def ransac_essential(
 ) -> tuple[np.ndarray, np.ndarray]:
     """RANSAC over 8-point samples; refit on inliers. Coords must be normalized.
 
-    thresh is on squared Sampson distance in normalized coords
-    (1e-5 ~ (2-3 px / f)^2 for f~1500).
+    thresh is on squared Sampson distance in normalized coords.
     """
     n = len(x1)
+    if n < 8:
+        raise RuntimeError(f"Not enough points for 8-point RANSAC (got {n})")
     best_inliers = np.zeros(n, dtype=bool)
     for _ in range(iters):
         idx = rng.choice(n, 8, replace=False)
@@ -89,7 +84,7 @@ def decompose_essential(E: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
         U = -U
     if np.linalg.det(Vt) < 0:
         Vt = -Vt
-    W = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=float)
+    W = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=float)
     R1 = U @ W @ Vt
     R2 = U @ W.T @ Vt
     t = U[:, 2]
@@ -103,7 +98,7 @@ def choose_pose(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Cheirality check: pick the (R, t) putting the most points in front of
     both cameras. Camera 1 is [I|0]; coords normalized. Returns (R, t, mask)."""
-    from .triangulation import triangulate_two_view
+    from ..triangulation import triangulate_two_view
 
     P1 = np.hstack([np.eye(3), np.zeros((3, 1))])
     best = None

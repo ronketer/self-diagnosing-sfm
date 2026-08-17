@@ -1,12 +1,128 @@
-"""Perspective-n-Point from scratch: DLT + RANSAC + nonlinear refinement."""
+"""Perspective-n-Point pose estimation: OpenCV production solver + scratch reference."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+import cv2
 import numpy as np
 from scipy.optimize import least_squares
 
-from .triangulation import reproject
+from .config import SfMConfig
+from .geometry.projection import reproject
+from .models import CameraIntrinsics, CameraPose
+from .validation.diagnostics import FailureReason
 
 rng = np.random.default_rng(1)
 
+
+@dataclass
+class PnPResult:
+    """Result of camera pose estimation from 2D-3D correspondences."""
+    accepted: bool
+    pose: CameraPose | None
+    inlier_indices: np.ndarray
+    reprojection_rms_px: float | None
+    reason: FailureReason | str | None = None
+
+
+def estimate_camera_pose(
+    points3d: np.ndarray,
+    points2d: np.ndarray,
+    intrinsics: CameraIntrinsics | np.ndarray,
+    config: SfMConfig | None = None,
+) -> PnPResult:
+    """Robust camera pose estimation using OpenCV solvePnPRansac + solvePnPRefineLM."""
+    if config is None:
+        config = SfMConfig()
+
+    n = len(points3d)
+    if n < config.min_pnp_correspondences:
+        return PnPResult(
+            accepted=False,
+            pose=None,
+            inlier_indices=np.empty(0, dtype=int),
+            reprojection_rms_px=None,
+            reason=FailureReason.INSUFFICIENT_PNP_CORRESPONDENCES,
+        )
+
+    if isinstance(intrinsics, CameraIntrinsics):
+        K = intrinsics.K
+        distortion = intrinsics.distortion
+    else:
+        K = np.asarray(intrinsics, dtype=float)
+        distortion = None
+
+    pts3d = np.ascontiguousarray(points3d, dtype=np.float64)
+    pts2d = np.ascontiguousarray(points2d, dtype=np.float64)
+
+    success, rvec, tvec, inliers = cv2.solvePnPRansac(
+        pts3d,
+        pts2d,
+        K,
+        distortion,
+        iterationsCount=config.pnp_iterations,
+        reprojectionError=config.pnp_reprojection_error_px,
+        confidence=config.pnp_confidence,
+        flags=cv2.SOLVEPNP_ITERATIVE,
+    )
+
+    if not success or inliers is None or len(inliers) == 0:
+        return PnPResult(
+            accepted=False,
+            pose=None,
+            inlier_indices=np.empty(0, dtype=int),
+            reprojection_rms_px=None,
+            reason=FailureReason.PNP_FAILED,
+        )
+
+    inlier_idx = inliers.ravel().astype(int)
+    n_inliers = len(inlier_idx)
+
+    # Acceptance threshold check
+    if n_inliers < config.min_pnp_inliers:
+        return PnPResult(
+            accepted=False,
+            pose=None,
+            inlier_indices=inlier_idx,
+            reprojection_rms_px=None,
+            reason=FailureReason.INSUFFICIENT_PNP_INLIERS,
+        )
+
+    # Non-linear refinement on inliers
+    try:
+        rvec_refined, tvec_refined = cv2.solvePnPRefineLM(
+            pts3d[inlier_idx],
+            pts2d[inlier_idx],
+            K,
+            distortion,
+            rvec,
+            tvec,
+        )
+        rvec, tvec = rvec_refined, tvec_refined
+    except cv2.error:
+        pass  # Fall back to RANSAC pose if LM fails
+
+    R = cv2.Rodrigues(rvec)[0]
+    t = tvec.ravel()
+
+    # Reprojection RMS on inliers
+    proj = reproject(K, R, t, pts3d[inlier_idx])
+    sq_errs = np.sum((proj - pts2d[inlier_idx]) ** 2, axis=1)
+    rms = float(np.sqrt(np.mean(sq_errs)))
+
+    pose = CameraPose(R=R, t=t)
+    return PnPResult(
+        accepted=True,
+        pose=pose,
+        inlier_indices=inlier_idx,
+        reprojection_rms_px=rms,
+        reason=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scratch / Reference implementations for testing and educational comparison
+# ---------------------------------------------------------------------------
 
 def dlt_pnp(pts3d: np.ndarray, pts2d: np.ndarray, K: np.ndarray):
     """Linear PnP: solve P = K[R|t] from >=6 2D-3D pairs, then extract (R, t)
@@ -16,8 +132,7 @@ def dlt_pnp(pts3d: np.ndarray, pts2d: np.ndarray, K: np.ndarray):
         return None
     # Work in normalized image coords so the solved M ~ [R|t]
     xn = (np.linalg.inv(K) @ np.hstack([pts2d, np.ones((n, 1))]).T).T
-    # Condition the 3D points (centroid at origin, unit mean norm) — plain
-    # DLT is numerically fragile without this
+    # Condition the 3D points (centroid at origin, unit mean norm)
     c3 = pts3d.mean(axis=0)
     s3 = np.linalg.norm(pts3d - c3, axis=1).mean()
     s3 = max(s3, 1e-12)

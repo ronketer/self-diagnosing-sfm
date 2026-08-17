@@ -1,146 +1,160 @@
-"""Incremental structure-from-motion pipeline."""
+"""Incremental Structure-from-Motion pipeline with explicit validation and diagnostics."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass, field
-
+from typing import Any, Callable
 import numpy as np
 
 from .bundle_adjustment import run_bundle_adjustment
-from .geometry import (
-    choose_pose,
-    decompose_essential,
-    ransac_essential,
-    to_normalized,
-)
-from .pnp import ransac_pnp
+from .config import SfMConfig
+from .geometry.essential import ransac_essential
+from .geometry.projection import reproject, to_normalized
+from .initialization import InitialPairEvaluation, select_init_pair
+from .models import CameraIntrinsics, CameraPose, Reconstruction
+from .pnp import PnPResult, estimate_camera_pose
 from .tracks import TrackManager
-from .triangulation import (
-    point_depths,
-    reproject,
-    triangulate_multi_view,
-    triangulation_angles_deg,
+from .triangulation import point_depths, triangulate_track
+from .validation.diagnostics import (
+    DiagnosticEvent,
+    FailureReason,
+    ReconstructionDiagnostics,
 )
 
 
 @dataclass
-class Reconstruction:
-    K: np.ndarray
-    poses: dict[int, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
-    points3d: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+class ReconstructionState:
+    """Encapsulates the evolving state of an incremental SfM reconstruction."""
+    recon: Reconstruction
+    tracks: TrackManager
+    keypoints: list[np.ndarray]
+    config: SfMConfig
+    diagnostics: ReconstructionDiagnostics = field(default_factory=ReconstructionDiagnostics)
+    registered_images: set[int] = field(default_factory=set)
+    registration_order: list[int] = field(default_factory=list)
+    anchor_camera: int = 0
+    scale_camera: int = 1
+    stats: dict[str, Any] = field(default_factory=dict)
 
-    def camera_center(self, i: int) -> np.ndarray:
-        R, t = self.poses[i]
-        return -R.T @ t
+    @property
+    def n_images(self) -> int:
+        return len(self.keypoints)
+
+    def has_unregistered_images(self) -> bool:
+        return len(self.registered_images) < self.n_images
+
+    def add_camera(self, image_id: int, pose: CameraPose) -> None:
+        self.recon.set_pose(image_id, pose)
+        self.registered_images.add(image_id)
+        self.registration_order.append(image_id)
+
+    def get_observations(self) -> list[tuple[int, int, np.ndarray]]:
+        """(img, point3d_id, xy_pixel) for all triangulated tracks in registered views."""
+        obs = []
+        for tr in self.tracks.tracks:
+            if tr.point3d_id is None:
+                continue
+            for img, kp in tr.obs.items():
+                if img in self.registered_images:
+                    obs.append((img, tr.point3d_id, self.keypoints[img][kp]))
+        return obs
+
+    def compute_reprojection_rms(self) -> float | None:
+        obs = self.get_observations()
+        if not obs:
+            return None
+        sq_errs = []
+        for img, pt_id, xy in obs:
+            R, t = self.recon.poses[img]
+            proj = reproject(self.recon.K, R, t, self.recon.points3d[pt_id].reshape(1, 3))[0]
+            sq_errs.append(float(np.sum((proj - xy) ** 2)))
+        return float(np.sqrt(np.mean(sq_errs)))
 
 
-def _observations(tm: TrackManager, keypoints, registered) -> list:
-    """(img, point3d_id, xy) for all triangulated tracks in registered views."""
-    obs = []
-    for tr in tm.tracks:
-        if tr.point3d_id is None:
-            continue
-        for img, kp in tr.obs.items():
-            if img in registered:
-                obs.append((img, tr.point3d_id, keypoints[img][kp]))
-    return obs
+def _sampson_thresh(K: np.ndarray, px: float = 3.0) -> float:
+    f = (K[0, 0] + K[1, 1]) / 2.0
+    return (px / f) ** 2
 
 
-def _reprojection_rms(recon: Reconstruction, observations: list) -> float | None:
-    """Root-mean-square 2D reprojection distance over observations."""
-    if not observations:
-        return None
-    squared_errors = []
-    for img, point_id, xy in observations:
-        R, t = recon.poses[img]
-        projected = reproject(
-            recon.K, R, t, recon.points3d[point_id].reshape(1, 3)
-        )[0]
-        squared_errors.append(float(np.sum((projected - xy) ** 2)))
-    return float(np.sqrt(np.mean(squared_errors)))
-
-
-def select_init_pair(
-    match_graph, keypoints, K, min_inliers: int = 100
-) -> tuple[tuple[int, int], np.ndarray, tuple]:
-    """Pick the pair maximizing median triangulation angle among well-matched
-    pairs. Returns ((i, j), inlier_mask, (E, R, t))."""
-    best = None
+def verify_match_graph(
+    match_graph: dict[tuple[int, int], np.ndarray],
+    keypoints: list[np.ndarray],
+    K: np.ndarray,
+    config: SfMConfig,
+    log: Callable[[str], None] = print,
+) -> dict[tuple[int, int], np.ndarray]:
+    """Epipolar geometric verification: keep only essential-consistent matches per pair."""
+    verified = {}
+    thresh = _sampson_thresh(K, px=config.essential_ransac_px)
     for (i, j), matches in match_graph.items():
-        if len(matches) < min_inliers:
+        if len(matches) < config.min_verified_matches:
             continue
         x1 = to_normalized(keypoints[i][matches[:, 0]], K)
         x2 = to_normalized(keypoints[j][matches[:, 1]], K)
         try:
-            E, inl = ransac_essential(x1, x2, thresh=_sampson_thresh(K))
+            _, inl = ransac_essential(
+                x1, x2, thresh=thresh, iters=min(1000, config.essential_ransac_iters)
+            )
         except RuntimeError:
             continue
-        if inl.sum() < min_inliers:
-            continue
-        R, t, cheir = choose_pose(decompose_essential(E), x1[inl], x2[inl])
-        from .triangulation import triangulate_two_view
-
-        P1 = np.hstack([np.eye(3), np.zeros((3, 1))])
-        P2 = np.hstack([R, t.reshape(3, 1)])
-        X = triangulate_two_view(P1, P2, x1[inl][cheir], x2[inl][cheir])
-        C2 = -R.T @ t
-        angles = triangulation_angles_deg(np.zeros(3), C2, X)
-        score = np.median(angles)
-        if best is None or score > best[0]:
-            best = (score, (i, j), inl, (E, R, t))
-    if best is None:
-        raise RuntimeError("No valid initialization pair found")
-    _, pair, inl, ERt = best
-    return pair, inl, ERt
+        if inl.sum() >= config.min_verified_matches:
+            verified[(i, j)] = matches[inl]
+    n_in = sum(len(m) for m in match_graph.values())
+    n_out = sum(len(m) for m in verified.values())
+    log(
+        f"geometric verification: {n_in} -> {n_out} matches, "
+        f"{len(match_graph)} -> {len(verified)} pairs"
+    )
+    return verified
 
 
-def _try_triangulate(tm: TrackManager, recon: Reconstruction, keypoints, registered):
-    """Triangulate all completable tracks; filter by depth/reproj/angle."""
-    K = recon.K
+def triangulate_new_landmarks(
+    state: ReconstructionState,
+    log: Callable[[str], None] | None = None,
+) -> int:
+    """Triangulate all newly triangulatable tracks among currently registered views."""
+    tm = state.tracks
+    recon = state.recon
+    keypoints = state.keypoints
+    config = state.config
+
     new_pts = []
-    new_track_ids = []
-    for ti in tm.triangulatable_tracks(registered):
-        tr = tm.tracks[ti]
-        views = [img for img in tr.obs if img in registered]
-        P_list, x_list = [], []
-        for img in views:
-            R, t = recon.poses[img]
-            P_list.append(np.hstack([R, t.reshape(3, 1)]))
-            x_list.append(to_normalized(keypoints[img][tr.obs[img]].reshape(1, 2), K)[0])
-        X = triangulate_multi_view(P_list, x_list)
+    new_track_indices = []
 
-        ok = True
-        for img in views:
-            R, t = recon.poses[img]
-            if point_depths(R, t, X.reshape(1, 3))[0] <= 0:
-                ok = False
-                break
-            err = np.linalg.norm(
-                reproject(K, R, t, X.reshape(1, 3))[0] - keypoints[img][tr.obs[img]]
-            )
-            if err > 4.0:
-                ok = False
-                break
-        if ok and len(views) >= 2:
-            C1 = recon.camera_center(views[0])
-            C2 = recon.camera_center(views[-1])
-            ang = triangulation_angles_deg(C1, C2, X.reshape(1, 3))[0]
-            if ang < 1.0:
-                ok = False
-        if ok:
-            new_track_ids.append(ti)
-            new_pts.append(X)
+    for ti in tm.triangulatable_tracks(state.registered_images):
+        tr = tm.tracks[ti]
+        res = triangulate_track(tr.obs, recon.poses, keypoints, recon.K, config)
+        if res.accepted and res.xyz is not None:
+            new_pts.append(res.xyz)
+            new_track_indices.append(ti)
 
     if new_pts:
         base = len(recon.points3d)
-        recon.points3d = np.vstack([recon.points3d, np.array(new_pts)])
-        for k, ti in enumerate(new_track_ids):
+        state.recon.points3d = (
+            np.vstack([recon.points3d, np.array(new_pts)])
+            if len(recon.points3d) > 0
+            else np.array(new_pts)
+        )
+        for k, ti in enumerate(new_track_indices):
             tm.tracks[ti].point3d_id = base + k
+
     return len(new_pts)
 
 
-def prune_outliers(tm: TrackManager, recon: Reconstruction, keypoints, registered, max_err=2.0):
-    """Drop 3D points whose mean reprojection error exceeds max_err, then
-    compact the points array."""
+def prune_outliers(
+    state: ReconstructionState,
+    max_err: float = 4.0,
+) -> int:
+    """Drop 3D landmarks whose mean reprojection error exceeds max_err, then compact points."""
+    recon = state.recon
+    tm = state.tracks
+    keypoints = state.keypoints
     K = recon.K
+    registered = state.registered_images
+
+    if len(recon.points3d) == 0:
+        return 0
+
     keep = np.ones(len(recon.points3d), dtype=bool)
     for tr in tm.tracks:
         if tr.point3d_id is None:
@@ -150,80 +164,104 @@ def prune_outliers(tm: TrackManager, recon: Reconstruction, keypoints, registere
         for img, kp in tr.obs.items():
             if img in registered:
                 R, t = recon.poses[img]
-                errs.append(np.linalg.norm(reproject(K, R, t, X)[0] - keypoints[img][kp]))
+                proj = reproject(K, R, t, X)[0]
+                errs.append(np.linalg.norm(proj - keypoints[img][kp]))
         if errs and np.mean(errs) > max_err:
             keep[tr.point3d_id] = False
 
     remap = -np.ones(len(keep), dtype=np.int64)
     remap[keep] = np.arange(keep.sum())
     recon.points3d = recon.points3d[keep]
+
     removed = 0
     for tr in tm.tracks:
         if tr.point3d_id is not None:
             nid = remap[tr.point3d_id]
             tr.point3d_id = int(nid) if nid >= 0 else None
             removed += nid < 0
+
     return int((~keep).sum())
 
 
-def _sampson_thresh(K: np.ndarray, px: float = 3.0) -> float:
-    """Squared Sampson threshold in normalized coords for a pixel tolerance.
-    A fixed normalized threshold would implicitly scale with focal length."""
-    f = (K[0, 0] + K[1, 1]) / 2
-    return (px / f) ** 2
-
-
-def verify_match_graph(match_graph, keypoints, K, log=print) -> dict:
-    """Geometric verification: keep only epipolar-consistent matches per pair.
-    Cuts wrong matches (repeated structure) before they contaminate tracks."""
-    verified = {}
-    thresh = _sampson_thresh(K)
-    for (i, j), matches in match_graph.items():
-        x1 = to_normalized(keypoints[i][matches[:, 0]], K)
-        x2 = to_normalized(keypoints[j][matches[:, 1]], K)
-        try:
-            _, inl = ransac_essential(x1, x2, thresh=thresh, iters=1000)
-        except RuntimeError:
+def choose_next_camera(
+    state: ReconstructionState,
+    deferred: set[int],
+) -> tuple[int | None, int]:
+    """Find the unregistered camera sharing the most 2D-3D correspondences."""
+    best_img, best_n = None, 0
+    for img in range(state.n_images):
+        if img in state.registered_images or img in deferred:
             continue
-        if inl.sum() >= 30:
-            verified[(i, j)] = matches[inl]
-    n_in = sum(len(m) for m in match_graph.values())
-    n_out = sum(len(m) for m in verified.values())
-    log(f"geometric verification: {n_in} -> {n_out} matches, "
-        f"{len(match_graph)} -> {len(verified)} pairs")
-    return verified
+        p2, _, _ = state.tracks.correspondences_2d3d(
+            img, state.keypoints, state.recon.points3d
+        )
+        if len(p2) > best_n:
+            best_img, best_n = img, len(p2)
+    return best_img, best_n
 
 
 def run_sfm(
     keypoints: list[np.ndarray],
     match_graph: dict,
-    K: np.ndarray,
+    K: np.ndarray | CameraIntrinsics,
+    config: SfMConfig | None = None,
     ba_every: int = 3,
     use_ba: bool = True,
     use_geometric_verification: bool = True,
-    log=print,
+    log: Callable[[str], None] = print,
 ) -> tuple[Reconstruction, TrackManager, dict]:
+    """Execute the full incremental Structure-from-Motion pipeline."""
+    if config is None:
+        config = SfMConfig(ba_every_n_cameras=ba_every)
+
+    if isinstance(K, CameraIntrinsics):
+        K_mat = K.K
+    else:
+        K_mat = np.asarray(K, dtype=float)
+
     raw_pairs = len(match_graph)
     raw_matches = sum(len(matches) for matches in match_graph.values())
+
+    # Step 1: Geometric Verification
     if use_geometric_verification:
-        match_graph = verify_match_graph(match_graph, keypoints, K, log)
+        match_graph = verify_match_graph(match_graph, keypoints, K_mat, config, log)
     else:
         log("geometric verification disabled (ablation)")
+
+    # Step 2: Track Construction
     tm = TrackManager(match_graph)
     log(f"tracks: {len(tm.tracks)}")
 
-    (i0, j0), inl, (E, R, t) = select_init_pair(match_graph, keypoints, K)
-    log(f"init pair: ({i0}, {j0}) with {inl.sum()} inliers")
+    # Step 3: Two-View Initialization
+    best_init, init_evals = select_init_pair(match_graph, keypoints, K_mat, config)
+    i0, j0 = best_init.image_a, best_init.image_b
+    log(f"init pair: ({i0}, {j0}) with {best_init.n_inliers} inliers")
 
-    recon = Reconstruction(K=K)
-    recon.poses[i0] = (np.eye(3), np.zeros(3))
-    recon.poses[j0] = (R, t)
-    registered = {i0, j0}
+    recon = Reconstruction(K=K_mat)
+    recon.set_pose(i0, CameraPose(R=np.eye(3), t=np.zeros(3)))
+    recon.set_pose(j0, CameraPose(R=best_init.R, t=best_init.t))
 
-    n_new = _try_triangulate(tm, recon, keypoints, registered)
+    diagnostics = ReconstructionDiagnostics()
+    for ev in init_evals:
+        diagnostics.record_pair_evaluation(ev.to_dict())
+
+    state = ReconstructionState(
+        recon=recon,
+        tracks=tm,
+        keypoints=keypoints,
+        config=config,
+        diagnostics=diagnostics,
+        registered_images={i0, j0},
+        registration_order=[i0, j0],
+        anchor_camera=i0,
+        scale_camera=j0,
+    )
+
+    # Initial Triangulation
+    n_new = triangulate_new_landmarks(state, log)
     log(f"initial triangulation: {n_new} points")
 
-    stats = {
+    stats: dict[str, Any] = {
         "registration_order": [i0, j0],
         "n_images": len(keypoints),
         "use_ba": use_ba,
@@ -233,64 +271,84 @@ def run_sfm(
         "verified_match_pairs": len(match_graph),
         "verified_matches": sum(len(matches) for matches in match_graph.values()),
         "ba_history": [],
+        "diagnostics": diagnostics,
     }
-    n_images = len(keypoints)
-    since_ba = 0
-    rejected: set[int] = set()  # failed this round; retried after map grows
 
-    while len(registered) < n_images:
-        # next image = most 2D-3D correspondences
-        best_img, best_n = None, 0
-        for img in range(n_images):
-            if img in registered or img in rejected:
-                continue
-            p2, p3, _ = tm.correspondences_2d3d(img, keypoints, recon.points3d)
-            if len(p2) > best_n:
-                best_img, best_n = img, len(p2)
-        # rejected is cleared on every success, so reaching here with all
-        # remaining images rejected means no progress is possible
-        if best_img is None or best_n < 15:
-            log(f"stopping: no registrable image left ({best_n} correspondences)")
+    since_ba = 0
+    deferred: set[int] = set()
+
+    # Step 4: Incremental Registration Loop
+    while state.has_unregistered_images():
+        best_img, n_corr = choose_next_camera(state, deferred)
+
+        if best_img is None or n_corr < config.min_pnp_correspondences:
+            log(f"stopping: no registrable image left ({n_corr} correspondences)")
             break
 
         p2, p3, _ = tm.correspondences_2d3d(best_img, keypoints, recon.points3d)
-        result = ransac_pnp(p3, p2, K)
-        # accept on strong absolute support, decent ratio, or a small but
-        # near-unanimous set (thin overlap at the edges of a capture);
-        # contaminated tracks depress the ratio even when the pose is good
-        ok = result is not None and (
-            result[2].sum() >= 100
-            or result[2].sum() >= max(30, 0.3 * len(p2))
-            or (result[2].sum() >= 15 and result[2].sum() >= 0.6 * len(p2))
-        )
-        if not ok:
-            n_inl = 0 if result is None else int(result[2].sum())
+        pnp_result = estimate_camera_pose(p3, p2, K_mat, config)
+
+        if not pnp_result.accepted or pnp_result.pose is None:
+            n_inl = len(pnp_result.inlier_indices)
             log(f"image {best_img}: PnP rejected ({n_inl}/{len(p2)} inliers); deferring")
-            rejected.add(best_img)
+            deferred.add(best_img)
+            event = DiagnosticEvent(
+                stage="CAMERA_REGISTRATION",
+                entity=f"image:{best_img}",
+                status="DEFERRED",
+                reason=pnp_result.reason or FailureReason.INSUFFICIENT_PNP_INLIERS,
+                metrics={
+                    "correspondences": len(p2),
+                    "inliers": n_inl,
+                    "inlier_ratio": float(n_inl / max(len(p2), 1)),
+                },
+            )
+            diagnostics.record(event)
             continue
-        R, t, mask = result
-        recon.poses[best_img] = (R, t)
-        registered.add(best_img)
-        rejected.clear()  # map changed; rejected images may succeed now
+
+        # Register Camera
+        state.add_camera(best_img, pnp_result.pose)
+        deferred.clear()  # Map has expanded; retrying previously deferred images is now viable
         stats["registration_order"].append(best_img)
-        n_new = _try_triangulate(tm, recon, keypoints, registered)
+
+        event = DiagnosticEvent(
+            stage="CAMERA_REGISTRATION",
+            entity=f"image:{best_img}",
+            status="REGISTERED",
+            reason=None,
+            metrics={
+                "correspondences": len(p2),
+                "inliers": len(pnp_result.inlier_indices),
+                "inlier_ratio": float(len(pnp_result.inlier_indices) / max(len(p2), 1)),
+                "reprojection_rms_px": pnp_result.reprojection_rms_px or 0.0,
+            },
+        )
+        diagnostics.record(event)
+
+        n_new = triangulate_new_landmarks(state, log)
         log(
-            f"registered image {best_img}: {mask.sum()}/{len(mask)} PnP inliers, "
+            f"registered image {best_img}: {len(pnp_result.inlier_indices)}/{len(p2)} PnP inliers, "
             f"+{n_new} points (total {len(recon.points3d)})"
         )
 
         since_ba += 1
-        if use_ba and since_ba >= ba_every:
-            obs = _observations(tm, keypoints, registered)
+        if use_ba and since_ba >= config.ba_every_n_cameras:
+            obs = state.get_observations()
             recon.poses, recon.points3d, rb, ra = run_bundle_adjustment(
-                K, recon.poses, recon.points3d, obs
+                K_mat,
+                recon.poses,
+                recon.points3d,
+                obs,
+                anchor_camera=state.anchor_camera,
+                scale_camera=state.scale_camera,
+                config=config,
             )
-            n_pruned = prune_outliers(tm, recon, keypoints, registered, max_err=4.0)
+            n_pruned = prune_outliers(state, max_err=config.post_ba_prune_error_px)
             log(f"  BA: rms {rb:.3f} -> {ra:.3f} px ({len(obs)} obs), pruned {n_pruned}")
             stats["ba_history"].append(
                 {
                     "stage": "periodic",
-                    "n_registered": len(registered),
+                    "n_registered": len(state.registered_images),
                     "n_observations": len(obs),
                     "rms_before_px": rb,
                     "rms_after_px": ra,
@@ -299,18 +357,24 @@ def run_sfm(
             )
             since_ba = 0
 
-    # final BA + prune + BA
+    # Step 5: Final Optimization & Outlier Filtering
     if use_ba:
-        obs = _observations(tm, keypoints, registered)
+        obs = state.get_observations()
         recon.poses, recon.points3d, rb, ra = run_bundle_adjustment(
-            K, recon.poses, recon.points3d, obs
+            K_mat,
+            recon.poses,
+            recon.points3d,
+            obs,
+            anchor_camera=state.anchor_camera,
+            scale_camera=state.scale_camera,
+            config=config,
         )
         log(f"final BA: rms {rb:.3f} -> {ra:.3f} px")
         stats["rms_before_final_ba"] = rb
         stats["ba_history"].append(
             {
                 "stage": "final",
-                "n_registered": len(registered),
+                "n_registered": len(state.registered_images),
                 "n_observations": len(obs),
                 "rms_before_px": rb,
                 "rms_after_px": ra,
@@ -318,18 +382,24 @@ def run_sfm(
             }
         )
 
-        n_pruned = prune_outliers(tm, recon, keypoints, registered)
+        n_pruned = prune_outliers(state, max_err=config.final_prune_error_px)
         log(f"pruned {n_pruned} outlier points")
-        obs = _observations(tm, keypoints, registered)
+        obs = state.get_observations()
         recon.poses, recon.points3d, rb, ra = run_bundle_adjustment(
-            K, recon.poses, recon.points3d, obs
+            K_mat,
+            recon.poses,
+            recon.points3d,
+            obs,
+            anchor_camera=state.anchor_camera,
+            scale_camera=state.scale_camera,
+            config=config,
         )
         log(f"post-prune BA: rms {rb:.3f} -> {ra:.3f} px")
         stats["rms_final"] = ra
         stats["ba_history"].append(
             {
                 "stage": "post-prune",
-                "n_registered": len(registered),
+                "n_registered": len(state.registered_images),
                 "n_observations": len(obs),
                 "rms_before_px": rb,
                 "rms_after_px": ra,
@@ -337,11 +407,23 @@ def run_sfm(
             }
         )
 
-    obs = _observations(tm, keypoints, registered)
+    obs = state.get_observations()
     if not use_ba:
-        stats["rms_final"] = _reprojection_rms(recon, obs)
-    stats["n_registered"] = len(registered)
+        stats["rms_final"] = state.compute_reprojection_rms()
+
+    stats["n_registered"] = len(state.registered_images)
     stats["n_points"] = len(recon.points3d)
     stats["n_observations"] = len(obs)
     stats["mean_track_length"] = len(obs) / max(len(recon.points3d), 1)
+
+    diagnostics.summary_stats = {
+        "initial_pair": [i0, j0],
+        "registered_images": stats["n_registered"],
+        "total_images": stats["n_images"],
+        "landmarks": stats["n_points"],
+        "observations": stats["n_observations"],
+        "mean_track_length": stats["mean_track_length"],
+        "final_reprojection_rms_px": stats.get("rms_final"),
+    }
+
     return recon, tm, stats
