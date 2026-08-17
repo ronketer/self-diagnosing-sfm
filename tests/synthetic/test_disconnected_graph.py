@@ -105,7 +105,51 @@ def test_disconnected_view_graph():
         assert cam_info["status"] == CameraRegistrationStatus.BLOCKED_NO_2D3D_CORRESPONDENCES.value
         assert cam_info["last_2d3d_correspondences"] == 0
 
+    # Check BA history persistence when no periodic BA occurred
+    assert "ba_history" in stats
+    assert len(stats["ba_history"]) >= 1
+    stages = [entry["stage"] for entry in stats["ba_history"]]
+    assert "final" in stages
+
+
+def test_final_ba_history_without_periodic_ba():
+    """Verify final BA history is recorded when no incremental cameras trigger periodic BA."""
+    rng = np.random.default_rng(123)
+    K = np.array([[1000.0, 0, 500], [0, 1000.0, 500], [0, 0, 1]], dtype=float)
+    X = rng.uniform([-1, -1, 4], [1, 1, 7], size=(50, 3))
+
+    poses = {
+        0: (np.eye(3), np.zeros(3)),
+        1: (rodrigues_to_R(np.array([0.05, 0.0, 0.0])), np.array([0.5, 0.0, 0.0])),
+    }
+
+    keypoints = [reproject(K, R, t, X) for R, t in poses.values()]
+    match_graph = {
+        (0, 1): np.column_stack([np.arange(len(X)), np.arange(len(X))])
+    }
+
+    cfg = SfMConfig(
+        min_verified_matches=20,
+        min_init_inliers=30,
+        ba_every_n_cameras=10,  # Periodic BA will not trigger
+    )
+
+    recon, tm, stats = run_sfm(
+        keypoints,
+        match_graph,
+        K,
+        config=cfg,
+        use_ba=True,
+        log=lambda s: None,
+    )
+
+    assert stats["n_registered"] == 2
+    assert "ba_history" in stats
+    assert len(stats["ba_history"]) >= 1
+    assert any(entry["stage"] == "final" for entry in stats["ba_history"])
+
 
 if __name__ == "__main__":
     test_disconnected_view_graph()
+    test_final_ba_history_without_periodic_ba()
     print("test_disconnected_graph.py: ALL PASSED")

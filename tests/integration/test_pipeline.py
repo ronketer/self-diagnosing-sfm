@@ -52,7 +52,7 @@ def test_temple_sparse_ring_reconstruction():
 
     cache_dir = root / "output" / "templeSparseRing" / "cache"
     cache = cache_dir / "matches_templeSparseRing_all.npz"
-    graph = build_match_graph(keypoints, descriptors, cache_path=cache)
+    graph = build_match_graph(descriptors, cache_path=cache)
 
     config = SfMConfig()
     recon, tm, stats = run_sfm(

@@ -10,9 +10,9 @@ from src.pnp import estimate_camera_pose
 from src.triangulation import triangulate_track
 from src.validation.degeneracy import (
     check_cheirality,
+    check_ground_truth_baseline,
     check_parallax,
     check_planar_degeneracy,
-    check_pure_rotation,
     evaluate_homography_support,
 )
 from src.validation.diagnostics import FailureReason
@@ -27,7 +27,7 @@ def test_pure_rotation_and_zero_baseline():
     R2 = rodrigues_to_R(np.array([0.05, 0.0, 0.0]))
     t2 = np.zeros(3)  # Exact pure rotation
 
-    assert check_pure_rotation(t2) is True
+    assert check_ground_truth_baseline(t2) is True
 
     # 3D points
     X = rng.uniform([-1, -1, 4], [1, 1, 8], size=(50, 3))
