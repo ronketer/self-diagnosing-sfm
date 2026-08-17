@@ -7,6 +7,7 @@ from .essential import (
     hartley_normalize,
     ransac_essential,
     sampson_distance,
+    sampson_threshold_from_pixels,
 )
 from .pose import (
     relative_pose,
@@ -33,6 +34,7 @@ __all__ = [
     "reproject",
     "rotation_error_deg",
     "sampson_distance",
+    "sampson_threshold_from_pixels",
     "to_normalized",
     "triangulation_angles_deg",
     "umeyama",

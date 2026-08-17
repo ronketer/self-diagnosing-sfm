@@ -7,7 +7,7 @@ from ..models import ReconstructionState
 from .reconstruction_ops import collect_bundle_observations
 
 
-def _run_bundle_adjustment_on_state(
+def run_bundle_adjustment_on_state(
     state: ReconstructionState,
 ) -> tuple[
     float,

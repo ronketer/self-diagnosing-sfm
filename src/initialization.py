@@ -22,6 +22,7 @@ from .geometry.essential import (
     choose_pose,
     decompose_essential,
     ransac_essential,
+    sampson_threshold_from_pixels,
 )
 from .geometry.projection import (
     reproject,
@@ -134,20 +135,6 @@ class InitialPairEvaluation:
         }
 
 
-def _sampson_thresh(
-    K: np.ndarray,
-    px: float = 3.0,
-) -> float:
-    """Convert an approximate pixel threshold to normalized coordinates."""
-
-    f = (
-        float(K[0, 0])
-        + float(K[1, 1])
-    ) / 2.0
-
-    return (px / f) ** 2
-
-
 def evaluate_pair(
     i: int,
     j: int,
@@ -199,7 +186,7 @@ def evaluate_pair(
         K,
     )
 
-    thresh = _sampson_thresh(
+    thresh = sampson_threshold_from_pixels(
         K,
         px=config.essential_ransac_px,
     )

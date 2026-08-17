@@ -8,8 +8,6 @@ import numpy as np
 
 from .models import CameraIntrinsics, UnsupportedCameraModelError
 
-DATA_URL = "https://vision.middlebury.edu/mview/data/data/templeSparseRing.zip"
-
 
 @dataclass
 class CameraGT:

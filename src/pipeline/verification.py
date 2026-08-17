@@ -7,18 +7,13 @@ from typing import Callable
 import numpy as np
 
 from ..config import SfMConfig
-from ..geometry.essential import ransac_essential, sampson_distance
+from ..geometry.essential import (
+    ransac_essential,
+    sampson_distance,
+    sampson_threshold_from_pixels,
+)
 from ..geometry.projection import to_normalized
 from ..models import CameraIntrinsics, PairGeometry
-
-
-def _sampson_thresh(
-    K: np.ndarray,
-    px: float = 3.0,
-) -> float:
-    """Convert an approximate pixel threshold to normalized Sampson units."""
-    f = float((K[0, 0] + K[1, 1]) / 2.0)
-    return (px / f) ** 2
 
 
 def verify_match_graph(
@@ -51,7 +46,7 @@ def verify_match_graph(
         np.ndarray,
     ] = {}
 
-    threshold = _sampson_thresh(
+    threshold = sampson_threshold_from_pixels(
         K,
         px=config.essential_ransac_px,
     )

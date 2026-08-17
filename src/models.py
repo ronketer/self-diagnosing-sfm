@@ -228,7 +228,6 @@ class PairGeometry:
     inlier_ratio: float
 
     median_sampson_error: float | None = None
-    score: float = 0.0
 
 
 @dataclass

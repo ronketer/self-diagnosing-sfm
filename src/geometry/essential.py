@@ -47,6 +47,15 @@ def sampson_distance(E: np.ndarray, x1: np.ndarray, x2: np.ndarray) -> np.ndarra
     return num / np.maximum(den, 1e-15)
 
 
+def sampson_threshold_from_pixels(
+    K: np.ndarray,
+    px: float = 3.0,
+) -> float:
+    """Convert an approximate pixel threshold to normalized Sampson units."""
+    f = float((K[0, 0] + K[1, 1]) / 2.0)
+    return (px / f) ** 2
+
+
 def ransac_essential(
     x1: np.ndarray,
     x2: np.ndarray,

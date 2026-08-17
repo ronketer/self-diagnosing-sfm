@@ -38,7 +38,6 @@ class SfMConfig:
     scale_constraint_weight: float = 100.0
 
     # landmark filtering / pruning
-    max_landmark_error_px: float = 4.0
     post_ba_prune_error_px: float = 4.0
     final_prune_error_px: float = 2.0
 

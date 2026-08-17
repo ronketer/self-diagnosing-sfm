@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -92,13 +92,10 @@ class ReconstructionDiagnostics:
 
     events: list[DiagnosticEvent] = field(default_factory=list)
     initial_pair_evaluations: list[dict[str, Any]] = field(default_factory=list)
-    registration_events: list[dict[str, Any]] = field(default_factory=list)
     summary_stats: dict[str, Any] = field(default_factory=dict)
 
     def record(self, event: DiagnosticEvent) -> None:
         self.events.append(event)
-        if event.stage == "CAMERA_REGISTRATION":
-            self.registration_events.append(event.to_dict())
 
     def record_triangulation_rejection(self, reason: FailureReason | str) -> None:
         key = reason.value if isinstance(reason, FailureReason) else str(reason)

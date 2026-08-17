@@ -10,7 +10,7 @@ from ..validation.diagnostics import (
     DiagnosticEvent,
     FailureReason,
 )
-from .bundle import _run_bundle_adjustment_on_state
+from .bundle import run_bundle_adjustment_on_state
 from .reconstruction_ops import (
     prune_outliers,
     triangulate_new_landmarks,
@@ -167,7 +167,7 @@ def run_incremental_registration(
                 rms_before,
                 rms_after,
                 n_observations,
-            ) = _run_bundle_adjustment_on_state(state)
+            ) = run_bundle_adjustment_on_state(state)
 
             n_pruned = prune_outliers(
                 state,

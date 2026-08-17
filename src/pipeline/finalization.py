@@ -14,7 +14,7 @@ from ..validation.diagnostics import (
     ReconstructionStatus,
     TerminationReason,
 )
-from .bundle import _run_bundle_adjustment_on_state
+from .bundle import run_bundle_adjustment_on_state
 from .diagnostics import compute_view_graph_components
 from .reconstruction_ops import (
     collect_bundle_observations,
@@ -46,7 +46,7 @@ def run_final_optimization(
             rms_before,
             rms_after,
             n_observations,
-        ) = _run_bundle_adjustment_on_state(
+        ) = run_bundle_adjustment_on_state(
             state
         )
 
@@ -96,7 +96,7 @@ def run_final_optimization(
                 rms_before_pruned,
                 rms_final,
                 n_observations,
-            ) = _run_bundle_adjustment_on_state(
+            ) = run_bundle_adjustment_on_state(
                 state
             )
 

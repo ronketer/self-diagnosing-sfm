@@ -99,7 +99,7 @@ def compute_view_graph_components(
     }
 
 
-def _failure_stats(
+def build_failure_stats(
     *,
     reconstruction: Reconstruction,
     track_manager: TrackManager,
