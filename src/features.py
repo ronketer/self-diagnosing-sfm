@@ -34,7 +34,6 @@ def match_pair(desc1: np.ndarray, desc2: np.ndarray, ratio: float = 0.8) -> np.n
 
 
 def build_match_graph(
-    keypoints: list[np.ndarray],
     descriptors: list[np.ndarray],
     min_matches: int = 30,
     cache_path: Path | None = None,

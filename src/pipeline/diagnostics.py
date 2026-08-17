@@ -7,8 +7,6 @@ from typing import Any
 
 import numpy as np
 
-from ..models import Reconstruction
-from ..tracks import TrackManager
 from ..validation.diagnostics import ReconstructionDiagnostics
 
 
@@ -101,8 +99,6 @@ def compute_view_graph_components(
 
 def build_failure_stats(
     *,
-    reconstruction: Reconstruction,
-    track_manager: TrackManager,
     diagnostics: ReconstructionDiagnostics,
     n_images: int,
     raw_pairs: int,

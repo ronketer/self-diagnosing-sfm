@@ -78,8 +78,6 @@ def initialize_reconstruction(
         )
 
         stats = build_failure_stats(
-            reconstruction=reconstruction,
-            track_manager=track_manager,
             diagnostics=diagnostics,
             n_images=len(keypoints),
             raw_pairs=raw_pairs,
@@ -147,8 +145,6 @@ def initialize_reconstruction(
         )
 
         stats = build_failure_stats(
-            reconstruction=reconstruction,
-            track_manager=track_manager,
             diagnostics=diagnostics,
             n_images=len(keypoints),
             raw_pairs=raw_pairs,
@@ -228,7 +224,6 @@ def initialize_reconstruction(
 
     n_new = triangulate_new_landmarks(
         state,
-        log,
     )
 
     log(f"initial triangulation: {n_new} points")

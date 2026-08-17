@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Callable
-
 import numpy as np
 
 from ..geometry.projection import reproject
@@ -79,7 +77,6 @@ def compute_reprojection_rms(
 
 def triangulate_new_landmarks(
     state: ReconstructionState,
-    log: Callable[[str], None] | None = None,
 ) -> int:
     """Triangulate every untriangulated track visible in >=2 registered views."""
     reconstruction = state.reconstruction

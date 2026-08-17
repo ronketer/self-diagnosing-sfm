@@ -33,7 +33,7 @@ def run_final_optimization(
     reconstruction = state.reconstruction
     config = state.config
 
-    ba_history = state.stats.get(
+    ba_history = state.stats.setdefault(
         "ba_history",
         [],
     )

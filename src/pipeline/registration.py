@@ -152,7 +152,7 @@ def run_incremental_registration(
             )
         )
 
-        n_new = triangulate_new_landmarks(state, log)
+        n_new = triangulate_new_landmarks(state)
 
         log(
             f"registered image {best_image}: "
