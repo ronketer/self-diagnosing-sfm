@@ -22,6 +22,7 @@ class PnPResult:
     pose: CameraPose | None
     inlier_indices: np.ndarray
     reprojection_rms_px: float | None
+    inlier_ratio: float = 0.0
     reason: FailureReason | str | None = None
 
 
@@ -31,7 +32,7 @@ def estimate_camera_pose(
     intrinsics: CameraIntrinsics | np.ndarray,
     config: SfMConfig | None = None,
 ) -> PnPResult:
-    """Robust camera pose estimation using OpenCV solvePnPRansac + solvePnPRefineLM."""
+    """Robust camera pose estimation using OpenCV solvePnPRansac + solvePnPRefineLM with quality gates."""
     if config is None:
         config = SfMConfig()
 
@@ -42,6 +43,7 @@ def estimate_camera_pose(
             pose=None,
             inlier_indices=np.empty(0, dtype=int),
             reprojection_rms_px=None,
+            inlier_ratio=0.0,
             reason=FailureReason.INSUFFICIENT_PNP_CORRESPONDENCES,
         )
 
@@ -72,20 +74,34 @@ def estimate_camera_pose(
             pose=None,
             inlier_indices=np.empty(0, dtype=int),
             reprojection_rms_px=None,
+            inlier_ratio=0.0,
             reason=FailureReason.PNP_FAILED,
         )
 
     inlier_idx = inliers.ravel().astype(int)
     n_inliers = len(inlier_idx)
+    inlier_ratio = float(n_inliers / n)
 
-    # Acceptance threshold check
+    # 1. Minimum inliers threshold
     if n_inliers < config.min_pnp_inliers:
         return PnPResult(
             accepted=False,
             pose=None,
             inlier_indices=inlier_idx,
             reprojection_rms_px=None,
+            inlier_ratio=inlier_ratio,
             reason=FailureReason.INSUFFICIENT_PNP_INLIERS,
+        )
+
+    # 2. Minimum inlier ratio threshold
+    if inlier_ratio < config.min_pnp_inlier_ratio:
+        return PnPResult(
+            accepted=False,
+            pose=None,
+            inlier_indices=inlier_idx,
+            reprojection_rms_px=None,
+            inlier_ratio=inlier_ratio,
+            reason=FailureReason.LOW_PNP_INLIER_RATIO,
         )
 
     # Non-linear refinement on inliers
@@ -110,12 +126,24 @@ def estimate_camera_pose(
     sq_errs = np.sum((proj - pts2d[inlier_idx]) ** 2, axis=1)
     rms = float(np.sqrt(np.mean(sq_errs)))
 
+    # 3. Maximum reprojection RMS threshold
+    if rms > config.max_pnp_rms_px:
+        return PnPResult(
+            accepted=False,
+            pose=None,
+            inlier_indices=inlier_idx,
+            reprojection_rms_px=rms,
+            inlier_ratio=inlier_ratio,
+            reason=FailureReason.HIGH_PNP_REPROJECTION_ERROR,
+        )
+
     pose = CameraPose(R=R, t=t)
     return PnPResult(
         accepted=True,
         pose=pose,
         inlier_indices=inlier_idx,
         reprojection_rms_px=rms,
+        inlier_ratio=inlier_ratio,
         reason=None,
     )
 
@@ -130,9 +158,7 @@ def dlt_pnp(pts3d: np.ndarray, pts2d: np.ndarray, K: np.ndarray):
     n = len(pts3d)
     if n < 6:
         return None
-    # Work in normalized image coords so the solved M ~ [R|t]
     xn = (np.linalg.inv(K) @ np.hstack([pts2d, np.ones((n, 1))]).T).T
-    # Condition the 3D points (centroid at origin, unit mean norm)
     c3 = pts3d.mean(axis=0)
     s3 = np.linalg.norm(pts3d - c3, axis=1).mean()
     s3 = max(s3, 1e-12)
@@ -146,11 +172,9 @@ def dlt_pnp(pts3d: np.ndarray, pts2d: np.ndarray, K: np.ndarray):
     _, _, Vt = np.linalg.svd(A)
     M = Vt[-1].reshape(3, 4)
 
-    # Fix sign so points end up in front of the camera
     if np.median(Xh @ M[2]) < 0:
         M = -M
 
-    # Undo 3D conditioning: M_orig = M @ [[I/s, -c/s], [0, 1]]
     M = np.hstack([M[:, :3] / s3, (M[:, 3] - M[:, :3] @ c3 / s3).reshape(3, 1)])
 
     R_raw, t_raw = M[:, :3], M[:, 3]
@@ -189,7 +213,6 @@ def ransac_pnp(
             best_mask, best_pose = mask, pose
     if best_pose is None or best_mask.sum() < 6:
         return None
-    # local optimization: refine on inliers, recount, repeat while improving
     R, t = best_pose
     for _ in range(4):
         R, t = refine_pose(R, t, pts3d[best_mask], pts2d[best_mask], K)

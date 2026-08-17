@@ -5,8 +5,9 @@ Format reference: COLMAP src/colmap/scene/reconstruction_io.cc
 
 import struct
 from pathlib import Path
-
 import numpy as np
+
+from .models import UnsupportedCameraModelError
 
 # camera model id -> (name, n_params)
 CAMERA_MODELS = {
@@ -76,7 +77,13 @@ def camera_K(cam: dict) -> np.ndarray:
         return np.array([[p[0], 0, p[1]], [0, p[0], p[2]], [0, 0, 1]])
     if cam["model"] == "PINHOLE":
         return np.array([[p[0], 0, p[2]], [0, p[1], p[3]], [0, 0, 1]])
-    if cam["model"] in ("SIMPLE_RADIAL", "RADIAL"):
-        # ignore radial distortion (small for these scenes); note in report
+    if cam["model"] in ("SIMPLE_RADIAL", "RADIAL", "OPENCV"):
+        # If radial distortion parameters are non-zero, check tolerance
+        distortion_params = p[3:] if cam["model"] == "PINHOLE" else p[4:] if cam["model"] == "OPENCV" else p[3:]
+        if np.any(np.abs(distortion_params) > 1e-4):
+            raise UnsupportedCameraModelError(
+                f"COLMAP camera {cam['model']} specifies non-zero distortion parameters {distortion_params}. "
+                f"This SfM implementation requires pre-undistorted images and zero distortion."
+            )
         return np.array([[p[0], 0, p[1]], [0, p[0], p[2]], [0, 0, 1]])
-    raise ValueError(f"unsupported camera model {cam['model']}")
+    raise UnsupportedCameraModelError(f"Unsupported COLMAP camera model {cam['model']}")

@@ -1,18 +1,56 @@
 """Degeneracy detection and geometric sanity checks for Structure-from-Motion."""
 
+from __future__ import annotations
+
+import cv2
 import numpy as np
+
 from ..geometry.projection import triangulation_angles_deg
 
 
-def check_pure_rotation(t: np.ndarray, min_baseline: float = 1e-4) -> bool:
-    """Returns True if the translation is negligible (pure rotation degeneracy)."""
+def check_ground_truth_baseline(t: np.ndarray, min_baseline: float = 1e-4) -> bool:
+    """Test if a known ground-truth physical translation is negligible.
+
+    NOTE: This is strictly for synthetic/ground-truth checks. Essential-matrix
+    decomposition yields a unit-norm direction (||t|| == 1), so physical pure
+    rotation in production SfM MUST be detected via triangulation parallax angle.
+    """
     return float(np.linalg.norm(t)) < min_baseline
+
+
+# Alias for backwards compatibility in synthetic tests; documented as synthetic-only
+check_pure_rotation = check_ground_truth_baseline
+
+
+def evaluate_homography_support(
+    pts_px1: np.ndarray,
+    pts_px2: np.ndarray,
+    thresh_px: float = 3.0,
+) -> tuple[np.ndarray | None, np.ndarray, int, float]:
+    """Fit a projective Homography using OpenCV RANSAC to evaluate planar/rotational support.
+
+    Returns (H, inlier_mask, n_inliers, inlier_ratio).
+    """
+    pts1 = np.ascontiguousarray(pts_px1, dtype=np.float32)
+    pts2 = np.ascontiguousarray(pts_px2, dtype=np.float32)
+
+    if len(pts1) < 4:
+        return None, np.zeros(len(pts1), dtype=bool), 0, 0.0
+
+    H, mask = cv2.findHomography(pts1, pts2, cv2.RANSAC, thresh_px)
+    if H is None or mask is None:
+        return None, np.zeros(len(pts1), dtype=bool), 0, 0.0
+
+    inlier_mask = mask.ravel().astype(bool)
+    n_inliers = int(inlier_mask.sum())
+    inlier_ratio = float(n_inliers / max(len(pts1), 1))
+    return H, inlier_mask, n_inliers, inlier_ratio
 
 
 def check_planar_degeneracy(
     points3d: np.ndarray, max_variance_ratio: float = 1e-3
 ) -> tuple[bool, float]:
-    """Check if 3D points lie on a plane using PCA / SVD variance ratio.
+    """Secondary diagnostic: check if reconstructed 3D points lie on a plane using PCA variance ratio.
 
     Returns (is_planar, min_var_ratio).
     """

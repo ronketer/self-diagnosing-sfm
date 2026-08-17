@@ -6,6 +6,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .models import CameraIntrinsics, UnsupportedCameraModelError
+
 DATA_URL = "https://vision.middlebury.edu/mview/data/data/templeSparseRing.zip"
 
 
@@ -33,6 +35,7 @@ def parse_par_file(path: Path) -> dict[str, CameraGT]:
     cameras = {}
     lines = path.read_text().strip().splitlines()
     n = int(lines[0])
+    K_ref = None
     for line in lines[1 : n + 1]:
         parts = line.split()
         name = parts[0]
@@ -40,13 +43,22 @@ def parse_par_file(path: Path) -> dict[str, CameraGT]:
         K = vals[0:9].reshape(3, 3)
         R = vals[9:18].reshape(3, 3)
         t = vals[18:21]
+
+        if K_ref is None:
+            K_ref = K
+        else:
+            if not np.allclose(K_ref, K, atol=1e-3):
+                raise UnsupportedCameraModelError(
+                    f"Incompatible calibration in {path.name} for {name}: intrinsics differ from reference view."
+                )
+
         cameras[name] = CameraGT(K=K, R=R, t=t)
     return cameras
 
 
 def load_phone_folder(
     data_dir: Path, max_dim: int = 1024
-) -> tuple[list[Image], None, np.ndarray]:
+) -> tuple[list[Image], None, CameraIntrinsics]:
     """Load a folder of phone photos (no ground truth). Intrinsics come from
     the EXIF 35mm-equivalent focal length: f_px = long_side * f35 / 36.
     Images are downscaled so their long side is max_dim."""
@@ -90,12 +102,12 @@ def load_phone_folder(
     h, w = images[0].gray.shape
     f_px = max(h, w) * float(f35) / 36.0
     K = np.array([[f_px, 0, w / 2], [0, f_px, h / 2], [0, 0, 1]])
-    return images, None, K
+    return images, None, CameraIntrinsics.from_matrix(K)
 
 
 def load_colmap_scene(
     data_dir: Path, step: int = 3
-) -> tuple[list[Image], list[CameraGT], np.ndarray]:
+) -> tuple[list[Image], list[CameraGT], CameraIntrinsics]:
     """Load a COLMAP-calibrated scene (images/ + sparse/0/*.bin), taking every
     `step`-th image. COLMAP poses serve as the reference "ground truth"."""
     from .colmap_io import camera_K, read_cameras_bin, read_images_bin
@@ -108,7 +120,7 @@ def load_colmap_scene(
 
     names = sorted(poses)[::step]
     images, gts = [], []
-    K = None
+    K_ref = None
     for name in names:
         bgr = cv2.imread(str(data_dir / "images" / name))
         if bgr is None:
@@ -122,20 +134,30 @@ def load_colmap_scene(
         )
         info = poses[name]
         cam = cams[info["camera_id"]]
-        K = camera_K(cam)
+        K_cur = camera_K(cam)
         # distributed images may be downsampled relative to the calibration
         h, w = images[-1].gray.shape
-        K = K.copy()
-        K[0] *= w / cam["width"]
-        K[1] *= h / cam["height"]
-        gts.append(CameraGT(K=K, R=info["R"], t=info["t"]))
-    return images, gts, K
+        K_cur = K_cur.copy()
+        K_cur[0] *= w / cam["width"]
+        K_cur[1] *= h / cam["height"]
+
+        if K_ref is None:
+            K_ref = K_cur
+        else:
+            if not np.allclose(K_ref, K_cur, atol=1e-2):
+                raise UnsupportedCameraModelError(
+                    f"COLMAP images specify incompatible camera intrinsics across views:\n{K_ref}\nvs\n{K_cur}"
+                )
+
+        gts.append(CameraGT(K=K_cur, R=info["R"], t=info["t"]))
+
+    return images, gts, CameraIntrinsics.from_matrix(K_ref)
 
 
-def load_dataset(data_dir: Path) -> tuple[list[Image], list[CameraGT], np.ndarray]:
+def load_dataset(data_dir: Path) -> tuple[list[Image], list[CameraGT] | None, CameraIntrinsics]:
     """Load images (sorted by name) and ground-truth cameras.
 
-    Returns (images, gt_cameras, K) where K is shared intrinsics.
+    Returns ``(images, gt_cameras, intrinsics)`` with one shared camera model.
     """
     if (data_dir / "sparse").exists():
         return load_colmap_scene(data_dir)
@@ -160,5 +182,5 @@ def load_dataset(data_dir: Path) -> tuple[list[Image], list[CameraGT], np.ndarra
         )
         gts.append(cameras[name])
 
-    K = gts[0].K.copy()
-    return images, gts, K
+    intrinsics = CameraIntrinsics.from_matrix(gts[0].K.copy())
+    return images, gts, intrinsics

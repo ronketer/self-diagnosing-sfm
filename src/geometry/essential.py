@@ -1,8 +1,8 @@
 """Two-view essential matrix estimation, decomposition, and pose selection."""
 
-import numpy as np
+from __future__ import annotations
 
-rng = np.random.default_rng(0)
+import numpy as np
 
 
 def hartley_normalize(pts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -52,14 +52,21 @@ def ransac_essential(
     x2: np.ndarray,
     thresh: float = 1e-5,
     iters: int = 2000,
+    seed: int | None = None,
+    rng: np.random.Generator | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """RANSAC over 8-point samples; refit on inliers. Coords must be normalized.
 
     thresh is on squared Sampson distance in normalized coords.
+    Deterministic per call when seed or rng is provided.
     """
     n = len(x1)
     if n < 8:
         raise RuntimeError(f"Not enough points for 8-point RANSAC (got {n})")
+
+    if rng is None:
+        rng = np.random.default_rng(0 if seed is None else seed)
+
     best_inliers = np.zeros(n, dtype=bool)
     for _ in range(iters):
         idx = rng.choice(n, 8, replace=False)
