@@ -59,22 +59,49 @@ def test_triangulate_track_validation():
     kp1_b = reproject(K, poses[1][0], poses[1][1], X_back)[0]
     keypoints_back = [np.array([kp0_b]), np.array([kp1_b])]
     res_back = triangulate_track(obs, poses, keypoints_back, K, SfMConfig())
-    assert not res_back.accepted
+    assert res_back.accepted is False
     assert res_back.reason == FailureReason.NEGATIVE_DEPTH
 
-    # Low parallax -> tiny baseline
-    poses_tiny = {
+
+def test_multiview_triangulation_best_parallax_pair():
+    """Regression test: parallax must be computed across ALL unique camera pairs.
+
+    Camera 0 and Camera 2 have almost identical centers (tiny baseline, parallax << 1.0 deg).
+    Camera 0 and Camera 1 have wide baseline (parallax > 10.0 deg).
+    Arrange observation order {0: kp0, 2: kp2, 1: kp1} where first/last pair (0, 2) has tiny parallax.
+    """
+    K = np.array([[1000.0, 0, 500], [0, 1000.0, 500], [0, 0, 1]], dtype=float)
+    X_gt = np.array([[0.0, 0.0, 5.0]])
+
+    # Camera 0 at origin
+    # Camera 1 at x = 1.0 (baseline 1.0m, parallax ≈ 11.3 deg)
+    # Camera 2 at x = 0.001 (baseline 0.001m, parallax ≈ 0.011 deg)
+    poses = {
         0: (np.eye(3), np.zeros(3)),
-        1: (np.eye(3), np.array([-1e-4, 0.0, 0.0])),
+        1: (np.eye(3), np.array([-1.0, 0.0, 0.0])),
+        2: (np.eye(3), np.array([-0.001, 0.0, 0.0])),
     }
-    kp1_tiny = reproject(K, poses_tiny[1][0], poses_tiny[1][1], X_front)[0]
-    keypoints_tiny = [np.array([kp0_f]), np.array([kp1_tiny])]
-    res_tiny = triangulate_track(obs, poses_tiny, keypoints_tiny, K, SfMConfig(min_parallax_deg=1.0))
-    assert not res_tiny.accepted
-    assert res_tiny.reason == FailureReason.LOW_PARALLAX
+
+    kp0 = reproject(K, poses[0][0], poses[0][1], X_gt)[0]
+    kp1 = reproject(K, poses[1][0], poses[1][1], X_gt)[0]
+    kp2 = reproject(K, poses[2][0], poses[2][1], X_gt)[0]
+
+    keypoints = [np.array([kp0]), np.array([kp1]), np.array([kp2])]
+
+    # Dict order: 0, then 2, then 1 (first/last is (0, 2) if using [0] and [-1])
+    obs = {0: 0, 2: 0, 1: 0}
+
+    cfg = SfMConfig(min_parallax_deg=1.0)
+    res = triangulate_track(obs, poses, keypoints, K, cfg)
+
+    assert res.accepted is True, f"Triangulation rejected unexpectedly: reason={res.reason}"
+    assert res.parallax_deg is not None and res.parallax_deg > 5.0
+    assert res.best_parallax_pair in ((0, 1), (1, 0), (1, 2), (2, 1))
+    assert np.allclose(res.xyz, X_gt[0], atol=1e-3)
 
 
 if __name__ == "__main__":
     test_two_view_and_multi_view_dlt()
     test_triangulate_track_validation()
-    print("test_triangulation: OK")
+    test_multiview_triangulation_best_parallax_pair()
+    print("test_triangulation.py: ALL PASSED")

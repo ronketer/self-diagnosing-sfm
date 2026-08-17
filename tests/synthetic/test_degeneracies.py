@@ -1,10 +1,11 @@
-"""Tests for deliberate geometric degeneracies and failure detection."""
+"""Tests for deliberate geometric degeneracies, model evidence, and failure detection."""
 
 import numpy as np
 from src.bundle_adjustment import rodrigues_to_R
 from src.config import SfMConfig
 from src.geometry.projection import reproject
 from src.initialization import evaluate_pair
+from src.models import CameraIntrinsics, UnsupportedCameraModelError
 from src.pnp import estimate_camera_pose
 from src.triangulation import triangulate_track
 from src.validation.degeneracy import (
@@ -12,6 +13,7 @@ from src.validation.degeneracy import (
     check_parallax,
     check_planar_degeneracy,
     check_pure_rotation,
+    evaluate_homography_support,
 )
 from src.validation.diagnostics import FailureReason
 
@@ -36,13 +38,33 @@ def test_pure_rotation_and_zero_baseline():
 
     # Evaluate pair initialization
     ev = evaluate_pair(0, 1, matches, keypoints, K, SfMConfig(min_init_inliers=30))
-    # Must be rejected due to geometric degeneracy (low parallax or poor cheirality or essential failure)
+    # Must be rejected due to geometric degeneracy (low parallax or poor cheirality or essential failure or homography dominant)
     assert ev.accepted is False
     assert ev.rejection_reason in (
         FailureReason.LOW_PARALLAX,
+        FailureReason.HOMOGRAPHY_DOMINANT,
         FailureReason.POOR_CHEIRALITY,
         FailureReason.ESSENTIAL_ESTIMATION_FAILED,
     )
+
+
+def test_homography_vs_essential_evidence():
+    """Planar scenes or pure rotation induce strong projective Homography support."""
+    K = np.array([[1000.0, 0, 500], [0, 1000.0, 500], [0, 0, 1]], dtype=float)
+    # Planar scene on Z = 4
+    xy = rng.uniform([-1.5, -1.5], [1.5, 1.5], size=(60, 2))
+    z = np.full((60, 1), 4.0)
+    X_plane = np.hstack([xy, z])
+
+    R = rodrigues_to_R(np.array([0.05, -0.02, 0.01]))
+    t = np.array([0.2, 0.0, 0.0])
+
+    x1 = reproject(K, np.eye(3), np.zeros(3), X_plane)
+    x2 = reproject(K, R, t, X_plane)
+
+    H, mask, n_inl, inlier_ratio = evaluate_homography_support(x1, x2, thresh_px=2.0)
+    assert H is not None
+    assert inlier_ratio > 0.90, f"Planar scene should have high homography inlier ratio, got {inlier_ratio}"
 
 
 def test_planar_scene_degeneracy():
@@ -95,7 +117,9 @@ def test_pnp_with_gross_outliers():
     n_corrupt = 24
     x[:n_corrupt] = rng.uniform([0, 0], [1000, 1000], size=(n_corrupt, 2))
 
-    res = estimate_camera_pose(X, x, K, SfMConfig(min_pnp_inliers=20))
+    res = estimate_camera_pose(
+        X, x, K, SfMConfig(min_pnp_correspondences=30, min_pnp_inliers=20)
+    )
     assert res.accepted is True
     assert res.pose is not None
     assert np.allclose(res.pose.R, R_gt, atol=1e-3)
@@ -104,9 +128,58 @@ def test_pnp_with_gross_outliers():
     assert not any(idx < n_corrupt for idx in res.inlier_indices)
 
 
+def test_pnp_quality_gates():
+    """PnP rejects poses failing inlier-ratio or reprojection-RMS thresholds."""
+    K = np.array([[1000.0, 0, 500], [0, 1000.0, 500], [0, 0, 1]], dtype=float)
+    R_gt = np.eye(3)
+    t_gt = np.array([0.5, 0.0, 0.0])
+    X = rng.uniform([-1, -1, 3], [1, 1, 7], size=(50, 3))
+    x = reproject(K, R_gt, t_gt, X)
+
+    # 1. Test LOW_PNP_INLIER_RATIO: 20 outliers out of 50 -> 60% inliers
+    x_corrupt = x.copy()
+    x_corrupt[:20] = rng.uniform([0, 0], [1000, 1000], size=(20, 2))
+    cfg_ratio = SfMConfig(min_pnp_correspondences=10, min_pnp_inliers=10, min_pnp_inlier_ratio=0.75)
+    res_ratio = estimate_camera_pose(X, x_corrupt, K, cfg_ratio)
+    assert res_ratio.accepted is False
+    assert res_ratio.reason == FailureReason.LOW_PNP_INLIER_RATIO
+
+    # 2. Test HIGH_PNP_REPROJECTION_ERROR: noisy measurements exceeding max_pnp_rms_px
+    x_noisy = x + rng.normal(scale=1.5, size=x.shape)
+    cfg_rms = SfMConfig(min_pnp_correspondences=10, min_pnp_inliers=10, max_pnp_rms_px=0.5)
+    res_rms = estimate_camera_pose(X, x_noisy, K, cfg_rms)
+    assert res_rms.accepted is False
+    assert res_rms.reason == FailureReason.HIGH_PNP_REPROJECTION_ERROR
+
+
+def test_shared_intrinsics_and_distortion_validation():
+    """UnsupportedCameraModelError must be raised for mismatched K or non-zero distortion."""
+    K1 = np.array([[1000.0, 0, 500], [0, 1000.0, 500], [0, 0, 1]])
+    K2 = np.array([[1200.0, 0, 500], [0, 1200.0, 500], [0, 0, 1]])
+
+    intr1 = CameraIntrinsics(K=K1)
+    intr2 = CameraIntrinsics(K=K2)
+
+    try:
+        intr1.validate_compatible(intr2)
+        assert False, "Should have raised UnsupportedCameraModelError"
+    except UnsupportedCameraModelError:
+        pass
+
+    # Non-zero distortion
+    try:
+        CameraIntrinsics.from_matrix(K1, distortion=np.array([0.1, -0.05, 0.0, 0.0]))
+        assert False, "Should have raised UnsupportedCameraModelError"
+    except UnsupportedCameraModelError:
+        pass
+
+
 if __name__ == "__main__":
     test_pure_rotation_and_zero_baseline()
+    test_homography_vs_essential_evidence()
     test_planar_scene_degeneracy()
     test_points_behind_camera()
     test_pnp_with_gross_outliers()
+    test_pnp_quality_gates()
+    test_shared_intrinsics_and_distortion_validation()
     print("test_degeneracies: OK")

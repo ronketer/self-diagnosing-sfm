@@ -16,7 +16,8 @@ from src.sfm import run_sfm
 
 def all_valid_rotations(recon) -> bool:
     """Verify that all estimated camera rotations are valid SO(3) matrices."""
-    for img_id, (R, _) in recon.poses.items():
+    for camera in recon.cameras.values():
+        R = camera.pose.R
         if not np.allclose(R.T @ R, np.eye(3), atol=1e-4):
             return False
         if not np.isclose(np.linalg.det(R), 1.0, atol=1e-4):
@@ -30,9 +31,9 @@ def all_landmarks_have_observations(recon, tm) -> bool:
     for tr in tm.tracks:
         if tr.point3d_id is not None:
             pt_ids_in_tracks.add(tr.point3d_id)
-            if len(tr.obs) < 2:
+            if len(tr.observations) < 2:
                 return False
-    return len(pt_ids_in_tracks) == len(recon.points3d)
+    return len(pt_ids_in_tracks) == len(recon.landmarks)
 
 
 def test_temple_sparse_ring_reconstruction():
