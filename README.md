@@ -68,12 +68,34 @@ change.
 
 | Dataset | Registered cameras | Landmarks | Final RMS | Status |
 |---|---:|---:|---:|---|
-| Middlebury TempleRing | 47 / 47 | 13,811 | 0.383 px | `SUCCESS` |
+| Middlebury TempleRing | 47 / 47 | 14,471 | 0.391 px | `SUCCESS` |
 | Middlebury TempleSparseRing | 4 / 16 | 655 | 0.238 px | `PARTIAL` |
 
 TempleSparseRing is useful as a failure-analysis case: despite its lower
-reprojection residual, most cameras are missing and reconstruction terminates
-with `NO_2D3D_BRIDGE`.
+reprojection residual, only 4 of 16 cameras are registered and reconstruction
+terminates with `NO_2D3D_BRIDGE`. This demonstrates why reprojection RMS must
+be reported together with coverage and connectivity.
+
+## Ablation Results
+
+Fresh TempleRing runs isolate the effect of two major pipeline components:
+
+| Configuration | Cameras | Landmarks | RMS | Mean rotation error | Mean center error | Runtime |
+|---|---:|---:|---:|---:|---:|---:|
+| Full pipeline | 47 / 47 | 14,471 | **0.391 px** | 0.266° | 0.13% diameter | 414.5 s |
+| No bundle adjustment | 47 / 47 | 14,684 | 8.591 px | 0.633° | 0.32% diameter | **102.4 s** |
+| No geometric verification | 47 / 47 | 11,816 | 0.424 px | **0.193°** | **0.09% diameter** | 1556.4 s |
+
+The ablations show different roles:
+
+- **Bundle adjustment** is expensive but critical for global geometric
+  consistency: removing it preserves 47/47 camera coverage while increasing
+  reprojection RMS from 0.391 px to 8.591 px.
+- **Pairwise geometric verification** is not required for camera coverage on
+  TempleRing, but it substantially reduces the correspondence/track workload.
+  Without it the run is much slower and reconstructs fewer landmarks, while
+  pose error remains competitive. An ablation does not need to make every
+  metric worse to demonstrate a component's value.
 
 ## Architecture
 
@@ -251,18 +273,14 @@ Useful options:
 
 ### Fresh validation runs
 
-To reproduce the main results without using an existing match cache:
+To reproduce the reported baseline, ablations, and diagnostic case without
+using an existing match cache:
 
 ```powershell
-uv run python main.py --dataset templeRing --no-cache --output-label validation
-uv run python main.py --dataset templeSparseRing --no-cache --output-label validation
-```
-
-The new outputs are written to:
-
-```text
-output/templeRing_validation/
-output/templeSparseRing_validation/
+uv run python main.py --dataset templeRing --no-cache
+uv run python main.py --dataset templeRing --no-cache --skip-ba --output-label no_ba
+uv run python main.py --dataset templeRing --no-cache --skip-geometric-verification --output-label no_geom
+uv run python main.py --dataset templeSparseRing --no-cache
 ```
 
 ## Tests
