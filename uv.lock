@@ -77,13 +77,20 @@ dependencies = [
     { name = "scipy" },
 ]
 
+[package.optional-dependencies]
+phone = [
+    { name = "pillow" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "matplotlib", specifier = ">=3.11.1" },
     { name = "numpy", specifier = ">=2.5.1" },
     { name = "opencv-python", specifier = ">=5.0.0.93" },
+    { name = "pillow", marker = "extra == 'phone'", specifier = ">=11.0.0" },
     { name = "scipy", specifier = ">=1.18.0" },
 ]
+provides-extras = ["phone"]
 
 [[package]]
 name = "fonttools"

@@ -1,7 +1,7 @@
 [project]
 name = "final"
 version = "0.1.0"
-description = "Add your description here"
+description = "Robust and self-diagnosing incremental Structure-from-Motion from calibrated images"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -9,4 +9,9 @@ dependencies = [
     "numpy>=2.5.1",
     "opencv-python>=5.0.0.93",
     "scipy>=1.18.0",
+]
+
+[project.optional-dependencies]
+phone = [
+    "pillow>=11.0.0",
 ]

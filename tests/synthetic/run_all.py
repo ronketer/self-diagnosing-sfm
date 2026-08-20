@@ -17,46 +17,39 @@ from tests.synthetic.test_degeneracies import (
     test_pure_rotation_and_zero_baseline,
     test_shared_intrinsics_and_distortion_validation,
 )
-
 from tests.synthetic.test_disconnected_graph import (
     test_disconnected_view_graph,
 )
-
 from tests.synthetic.test_synthetic_sfm import (
     test_bundle_adjustment,
     test_bundle_adjustment_gauge_invariants,
     test_essential_and_pose,
-    test_opencv_and_scratch_pnp,
+    test_pnp_pose_recovery,
     test_rodrigues_roundtrip,
     test_triangulation,
 )
-
 from tests.unit.test_essential import (
     test_deterministic_essential_ransac,
     test_essential_matrix_properties,
     test_hartley_normalize,
     test_pair_geometry_reuse_in_initialization,
 )
-
 from tests.unit.test_initialization import (
     test_initial_pair_expansion_support,
     test_initial_pair_prefers_expandable_pair_over_isolated_high_parallax_pair,
     test_initial_pair_without_tracks_falls_back_to_geometry,
 )
-
 from tests.unit.test_projection import (
     test_camera_center,
     test_point_depths,
     test_to_normalized_and_reproject,
     test_triangulation_angles,
 )
-
 from tests.unit.test_tracks import (
     test_confidence_ordered_track_merging,
     test_conflict_aware_union_find,
     test_track_manager_invariant,
 )
-
 from tests.unit.test_triangulation import (
     test_multiview_triangulation_best_parallax_pair,
     test_triangulate_track_validation,
@@ -76,8 +69,8 @@ def run_core_synthetic_tests() -> None:
     test_essential_and_pose()
     print("essential + pose recovery: OK")
 
-    test_opencv_and_scratch_pnp()
-    print("PnP (OpenCV + scratch): OK")
+    test_pnp_pose_recovery()
+    print("PnP pose recovery: OK")
 
     test_bundle_adjustment()
     test_bundle_adjustment_gauge_invariants()

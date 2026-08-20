@@ -1,4 +1,4 @@
-"""Synthetic sanity checks for core geometry, PnP, and bundle adjustment."""
+"""Synthetic sanity checks for core geometry, production PnP, and bundle adjustment."""
 
 import numpy as np
 
@@ -14,7 +14,7 @@ from src.geometry.essential import (
     ransac_essential,
 )
 from src.geometry.projection import camera_center, reproject
-from src.pnp import estimate_camera_pose, ransac_pnp
+from src.pnp import estimate_camera_pose
 from src.triangulation import triangulate_two_view
 
 rng = np.random.default_rng(42)
@@ -66,24 +66,35 @@ def test_triangulation():
     assert np.allclose(Xt, X, atol=1e-8), f"max err {np.abs(Xt - X).max()}"
 
 
-def test_opencv_and_scratch_pnp():
+def test_pnp_pose_recovery():
+    """Production PnP should recover an exact synthetic camera pose."""
+
     K, X, _, (R2, t2) = make_scene()
     x2 = reproject(K, R2, t2, X)
 
-    # Scratch reference PnP
-    res_scratch = ransac_pnp(X, x2, K)
-    assert res_scratch is not None
-    R_sc, t_sc, mask_sc = res_scratch
-    assert np.allclose(R_sc, R2, atol=1e-5), "Scratch PnP rotation mismatch"
-    assert np.allclose(t_sc, t2, atol=1e-5), "Scratch PnP translation mismatch"
+    result = estimate_camera_pose(
+        X,
+        x2,
+        K,
+        SfMConfig(),
+    )
 
-    # OpenCV production PnP
-    res_cv = estimate_camera_pose(X, x2, K, SfMConfig())
-    assert res_cv.accepted
-    assert res_cv.pose is not None
-    assert np.allclose(res_cv.pose.R, R2, atol=1e-5), "OpenCV PnP rotation mismatch"
-    assert np.allclose(res_cv.pose.t, t2, atol=1e-5), "OpenCV PnP translation mismatch"
-    assert res_cv.reprojection_rms_px is not None and res_cv.reprojection_rms_px < 1e-3
+    assert result.accepted
+    assert result.pose is not None
+    assert np.allclose(
+        result.pose.R,
+        R2,
+        atol=1e-5,
+    ), "PnP rotation mismatch"
+    assert np.allclose(
+        result.pose.t,
+        t2,
+        atol=1e-5,
+    ), "PnP translation mismatch"
+    assert (
+        result.reprojection_rms_px is not None
+        and result.reprojection_rms_px < 1e-3
+    )
 
 
 def test_bundle_adjustment():
@@ -161,7 +172,7 @@ if __name__ == "__main__":
     test_rodrigues_roundtrip()
     test_triangulation()
     test_essential_and_pose()
-    test_opencv_and_scratch_pnp()
+    test_pnp_pose_recovery()
     test_bundle_adjustment()
     test_bundle_adjustment_gauge_invariants()
     print("test_synthetic_sfm: OK")
