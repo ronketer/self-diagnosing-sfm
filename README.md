@@ -1,12 +1,12 @@
-# Robust and Self-Diagnosing Incremental Structure-from-Motion
+# Self-Diagnosing Incremental Structure-from-Motion
 
 A calibrated incremental Structure-from-Motion (SfM) pipeline for recovering
-camera poses and sparse 3D geometry from overlapping images.
+camera poses and sparse 3D geometry from overlapping unordered images.
 
 The project focuses not only on reconstructing a scene, but also on diagnosing
-whether reconstruction is complete, partial, or geometrically blocked. The
-system reports reconstruction status, termination reasons, camera-registration
-state, view-graph connectivity, triangulation rejection causes, and PnP support.
+whether reconstruction is complete, partial, or geometrically blocked. It
+reports reconstruction status, termination reasons, camera-registration state,
+view-graph connectivity, triangulation rejection causes, and PnP support.
 
 ## Pipeline
 
@@ -40,13 +40,13 @@ flowchart TD
 ```
 
 The final reconstruction is classified as `SUCCESS`, `PARTIAL`, or `FAILED`
-and receives an explicit termination reason such as `COMPLETED`,
+with an explicit termination reason such as `COMPLETED`,
 `NO_2D3D_BRIDGE`, or `NO_REGISTRABLE_CAMERA`.
 
 ## Why This Project Is Interesting
 
 A geometrically strong two-view pair is not automatically a good seed for
-incremental SfM. A pair may have strong parallax and many inliers but still be
+incremental SfM. A pair may have strong parallax and many inliers while being
 poorly connected to the rest of the image set.
 
 The initializer therefore considers both:
@@ -62,13 +62,17 @@ reconstruction, so RMS alone is not treated as evidence of success.
 
 ## Representative Results
 
+The following values are from the current canonical runs. Re-run the commands
+below when validating a new code revision and update this table if the metrics
+change.
+
 | Dataset | Registered cameras | Landmarks | Final RMS | Status |
 |---|---:|---:|---:|---|
 | Middlebury TempleRing | 47 / 47 | 13,811 | 0.383 px | `SUCCESS` |
 | Middlebury TempleSparseRing | 4 / 16 | 655 | 0.238 px | `PARTIAL` |
 
-TempleSparseRing is intentionally useful as a failure-analysis case: despite
-its lower residual, most cameras are missing and the reconstruction terminates
+TempleSparseRing is useful as a failure-analysis case: despite its lower
+reprojection residual, most cameras are missing and reconstruction terminates
 with `NO_2D3D_BRIDGE`.
 
 ## Architecture
@@ -102,7 +106,7 @@ Core numerical and domain modules:
 | `src/models.py` | Canonical typed cameras, observations, tracks, landmarks, reconstruction, and state |
 | `src/geometry/essential.py` | Essential estimation, Sampson error, RANSAC, decomposition, and pose selection |
 | `src/geometry/projection.py` | Projection, normalization, camera centers, depth, and parallax geometry |
-| `src/geometry/pose.py` | Pose/alignment utilities |
+| `src/geometry/pose.py` | Pose and alignment utilities |
 | `src/initialization.py` | Two-view evaluation and expansion-aware initial-pair ranking |
 | `src/tracks.py` | Conflict-aware multi-view feature-track construction |
 | `src/triangulation.py` | Two-view / multi-view DLT and geometric validation |
@@ -111,7 +115,7 @@ Core numerical and domain modules:
 | `src/validation/` | Degeneracy checks and structured reconstruction diagnostics |
 | `src/evaluation.py` | Sim(3) alignment and quantitative pose/reprojection evaluation |
 | `src/visualization.py` | Reconstruction plots, diagnostic figures, and PLY export |
-| `src/colmap_io.py` | Optional COLMAP binary-model reader for external calibrated scenes |
+| `src/colmap_io.py` | Optional COLMAP model reader for external calibrated scenes |
 | `src/colmap_export.py` | Optional export to COLMAP sparse text format |
 
 ### Coordinate Convention
@@ -193,19 +197,27 @@ Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/).
 uv sync
 ```
 
-Datasets are stored locally under:
+## Datasets
+
+Benchmark data is intentionally not stored in the repository.
+
+The project uses three local dataset directories:
 
 ```text
-data/<dataset_name>/
+data/
+├── templeRing/
+├── templeSparseRing/
+└── truck/
 ```
 
-For example:
+- **Middlebury TempleRing** — primary complete reconstruction and quantitative
+  evaluation dataset.
+- **Middlebury TempleSparseRing** — sparse/wide-baseline case used to study
+  connectivity limitations and structured partial-reconstruction diagnosis.
+- **Tanks & Temples Truck** — optional larger-scene experiment prepared with
+  images and a COLMAP reference/calibration model.
 
-```text
-data/templeRing/
-data/templeSparseRing/
-data/truck/
-```
+Other downloaded benchmark scenes are not required by the project.
 
 ## Running a Reconstruction
 
@@ -221,7 +233,7 @@ Wide-baseline / partial-reconstruction case:
 uv run python main.py --dataset templeSparseRing
 ```
 
-Optional larger COLMAP-calibrated scene:
+Optional larger scene:
 
 ```powershell
 uv run python main.py --dataset truck
@@ -237,9 +249,25 @@ Useful options:
 | `--output-label <label>` | Write to `output/<dataset>_<label>/` |
 | `--skip-colmap-export` | Disable optional COLMAP text-model export |
 
+### Fresh validation runs
+
+To reproduce the main results without using an existing match cache:
+
+```powershell
+uv run python main.py --dataset templeRing --no-cache --output-label validation
+uv run python main.py --dataset templeSparseRing --no-cache --output-label validation
+```
+
+The new outputs are written to:
+
+```text
+output/templeRing_validation/
+output/templeSparseRing_validation/
+```
+
 ## Tests
 
-Run the final regression suite:
+Run the regression suite:
 
 ```powershell
 uv run python -m tests.unit.test_initialization
@@ -275,39 +303,6 @@ Depending on the dataset and whether reference poses are available:
 | `ba_history.png` | Bundle-adjustment RMS history |
 | `pose_error_by_registration.png` | Pose error by camera registration order |
 | `colmap/` | Optional COLMAP-compatible sparse text model and registered images |
-
-## Dataset Roles
-
-- **Middlebury TempleRing** — primary complete reconstruction and quantitative
-  evaluation dataset.
-- **Middlebury TempleSparseRing** — controlled wide-baseline/connectivity
-  failure case used to demonstrate expansion-aware initialization and
-  structured failure diagnosis.
-- **Tanks & Temples Truck** — optional larger-scene generalization experiment
-  using a COLMAP calibration/reference reconstruction.
-- **Phone/video capture** — optional qualitative experiment without reference
-  poses.
-
-## Optional Video Preprocessing
-
-`extract_frames.py` is a standalone preprocessing utility for self-captured
-video. It is not part of the SfM reconstruction pipeline.
-
-Example:
-
-```powershell
-uv run python extract_frames.py input.mp4 data/my_capture --n-frames 70
-```
-
-It selects sharp frames from temporal windows, downsizes them, and writes
-`f35_equiv.txt` for approximate phone-camera intrinsics.
-
-The phone-image loader uses Pillow for EXIF access. Install the optional extra
-when using that path:
-
-```powershell
-uv sync --extra phone
-```
 
 ## Current Limitations
 
