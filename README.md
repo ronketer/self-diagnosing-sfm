@@ -1,6 +1,42 @@
-# Robust and Self-Diagnosing Incremental 3D Reconstruction
+# Robust and Self-Diagnosing Incremental Structure-from-Motion
 
-An incremental Structure-from-Motion (SfM) pipeline built from first principles in Python, NumPy, and SciPy, with OpenCV support for local feature detection, matching, and PnP resectioning. The system recovers camera poses and sparse 3D geometry from calibrated images while actively diagnosing geometric health, failure modes, and view-graph connectivity.
+A calibrated incremental Structure-from-Motion (SfM) pipeline for recovering
+camera poses and sparse 3D geometry from overlapping images.
+
+The project focuses not only on reconstructing a scene, but also on diagnosing
+whether the reconstruction is complete, partial, or geometrically blocked.
+The system reports camera-registration status, view-graph connectivity,
+triangulation rejection reasons, PnP support, and explicit termination reasons.
+
+## Pipeline
+
+```mermaid
+flowchart TD
+    A[Input images + shared calibration K]
+    B[SIFT features + descriptor matching]
+    C[Essential-matrix geometric verification]
+    D[Conflict-aware feature tracks]
+    E[Expansion-aware two-view initialization]
+    F[Initial 3D landmarks]
+    G[Incremental PnP camera registration]
+    H[Triangulate newly visible landmarks]
+    I[Periodic bundle adjustment]
+    J{More cameras can register?}
+    K[Final BA + landmark pruning]
+    L[Evaluation + diagnostics]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+    H --> I
+    I --> J
+    J -- Yes --> G
+    J -- No --> K
+    K --> L
 
 ---
 

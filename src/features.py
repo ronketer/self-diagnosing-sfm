@@ -1,4 +1,4 @@
-"""SIFT feature detection and pairwise matching (the only OpenCV-heavy stage)."""
+"""SIFT feature detection and pairwise descriptor matching."""
 
 from pathlib import Path
 
