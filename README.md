@@ -4,9 +4,9 @@ A calibrated incremental Structure-from-Motion (SfM) pipeline for recovering
 camera poses and sparse 3D geometry from overlapping images.
 
 The project focuses not only on reconstructing a scene, but also on diagnosing
-whether the reconstruction is complete, partial, or geometrically blocked.
-The system reports camera-registration status, view-graph connectivity,
-triangulation rejection reasons, PnP support, and explicit termination reasons.
+whether reconstruction is complete, partial, or geometrically blocked. The
+system reports reconstruction status, termination reasons, camera-registration
+state, view-graph connectivity, triangulation rejection causes, and PnP support.
 
 ## Pipeline
 
@@ -21,7 +21,7 @@ flowchart TD
     G[Incremental PnP camera registration]
     H[Triangulate newly visible landmarks]
     I[Periodic bundle adjustment]
-    J{More cameras can register?}
+    J{Another camera can register?}
     K[Final BA + landmark pruning]
     L[Evaluation + diagnostics]
 
@@ -37,157 +37,287 @@ flowchart TD
     J -- Yes --> G
     J -- No --> K
     K --> L
-
----
-
-## What the Project Does
-
-The reconstruction pipeline executes a structured sequential workflow:
-
-```text
-Images
-  ↓
-SIFT feature detection & descriptor matching
-  ↓
-Pairwise Essential-matrix geometric verification
-  ↓
-Conflict-free feature-track construction
-  ↓
-Expansion-aware two-view initialization
-  ↓
-Incremental PnP camera registration loop
-  ↓
-Multi-view DLT triangulation with geometric quality gates
-  ↓
-Periodic & final bundle adjustment (BA) with gauge anchoring
-  ↓
-Reconstruction finalization, status classification & failure diagnostics
 ```
 
-Rather than silently halting or treating partial reconstructions as complete, the system outputs explicit diagnostics including status (`SUCCESS`, `PARTIAL`, `FAILED`), termination reasons (such as `COMPLETED`, `NO_2D3D_BRIDGE`, `NO_REGISTRABLE_CAMERA`), per-camera registration states, and view-graph component analysis.
+The final reconstruction is classified as `SUCCESS`, `PARTIAL`, or `FAILED`
+and receives an explicit termination reason such as `COMPLETED`,
+`NO_2D3D_BRIDGE`, or `NO_REGISTRABLE_CAMERA`.
 
----
+## Why This Project Is Interesting
 
-## Implementation Boundaries
+A geometrically strong two-view pair is not automatically a good seed for
+incremental SfM. A pair may have strong parallax and many inliers but still be
+poorly connected to the rest of the image set.
 
-The project distinguishes custom mathematical/pipeline implementations from library-assisted components:
+The initializer therefore considers both:
 
-### Custom Project Logic
-- **Two-View Epipolar Geometry**: Hartley-normalized 8-point Essential matrix estimation, Sampson distance scoring, deterministic RANSAC, Essential matrix decomposition, and cheirality-based pose recovery.
-- **Track Management**: Union-find feature-track builder with strict multi-observation conflict detection and rejection.
-- **Expansion-Aware Initialization**: Multi-criteria pair selection evaluating inlier ratio, parallax angles, cheirality, homography degeneracy, and 2D↔3D expansion support for subsequent views.
-- **Triangulation**: Multi-view DLT triangulation with strict validation gates (positive depth in all views, minimum parallax angle, maximum reprojection error).
-- **State Machine & Diagnostics**: Immutable camera registration state machine, outlier landmark pruning, view-graph connected components, and failure categorization.
-- **Bundle Adjustment Integration**: Typed-state-to-vector flattening, sparse Jacobian structure construction, and gauge constraint enforcement (fixed anchor camera pose and scale camera baseline distance).
-- **Evaluation**: Sim(3) Umeyama trajectory alignment, geodesic rotation error metrics, normalized camera-center translation errors, and COLMAP text/binary export.
+- **geometric quality** — Essential-matrix support, cheirality, parallax,
+  reprojection quality, and homography degeneracy;
+- **expansion support** — whether the initial tracks can provide enough
+  2D↔3D correspondences to register additional cameras.
 
-### Library-Assisted Components
-- **OpenCV (`cv2`)**: SIFT feature detection and brute-force descriptor matching (`cv2.SIFT_create`, `cv2.BFMatcher`), PnP RANSAC pose estimation (`cv2.solvePnPRansac`), Rodrigues axis-angle conversion (`cv2.Rodrigues`), and homography model evidence (`cv2.findHomography`).
-- **SciPy (`scipy.optimize.least_squares`)**: Sparse Levenberg-Marquardt / trust-region reflective nonlinear solver for bundle adjustment.
-- **NumPy**: Matrix algebra, SVD decompositions, and vectorized geometric projections.
+The project also treats reconstruction coverage as a first-class metric. A
+small partial reconstruction can have a lower reprojection RMS than a complete
+reconstruction, so RMS alone is not treated as evidence of success.
 
----
+## Representative Results
+
+| Dataset | Registered cameras | Landmarks | Final RMS | Status |
+|---|---:|---:|---:|---|
+| Middlebury TempleRing | 47 / 47 | 13,811 | 0.383 px | `SUCCESS` |
+| Middlebury TempleSparseRing | 4 / 16 | 655 | 0.238 px | `PARTIAL` |
+
+TempleSparseRing is intentionally useful as a failure-analysis case: despite
+its lower residual, most cameras are missing and the reconstruction terminates
+with `NO_2D3D_BRIDGE`.
 
 ## Architecture
 
-The codebase separates high-level pipeline orchestration from pure numerical algorithms:
+The code separates high-level SfM sequencing from geometry, numerical
+optimization, typed reconstruction state, and experiment support.
 
 ```text
-src/sfm.py (Public facade: exposes run_sfm)
-  ↓
-src/pipeline/orchestration.py
-  ├── verification.py          (Pairwise geometric verification before track building)
-  ├── initialization_stage.py  (Expansion-aware initialization & map seeding)
-  ├── registration.py          (Incremental PnP candidate selection & map expansion)
-  └── finalization.py          (Final BA, outlier pruning, camera statuses & statistics)
+main.py
+  │
+  ▼
+src/sfm.py                     public API: run_sfm()
+  │
+  ▼
+src/pipeline/orchestration.py  high-level stage sequencing
+  │
+  ├── verification.py         pairwise geometric verification
+  ├── initialization_stage.py initial cameras + initial map
+  ├── registration.py         incremental PnP registration
+  └── finalization.py         final optimization + diagnostics
+          │
+          ├── reconstruction_ops.py
+          ├── bundle.py
+          └── diagnostics.py
 ```
 
-**Shared Pipeline Helpers & Domain Models:**
-- `src/pipeline/reconstruction_ops.py`: Typed triangulation, outlier pruning, and reprojection RMS.
-- `src/pipeline/bundle.py`: Boundary between typed `ReconstructionState` and numerical BA.
-- `src/pipeline/diagnostics.py`: Match-graph connectivity analysis and failure statistics.
-- `src/geometry/`: Pure geometric primitives (`essential.py`, `projection.py`, `pose.py`).
-- `src/initialization.py`: Two-view pair evaluation and expansion scoring.
-- `src/triangulation.py`: Multi-view DLT triangulation algorithms.
-- `src/pnp.py`: Resectioning, conditioned DLT PnP, and nonlinear refinement.
-- `src/bundle_adjustment.py`: Joint camera pose and 3D landmark optimization.
-- `src/tracks.py`: Union-find feature tracking with conflict prevention.
-- `src/models.py`: Typed immutable data classes (`CameraPose`, `Landmark`, `Reconstruction`, `ReconstructionState`).
-- `src/validation/`: Degeneracy detection (`degeneracy.py`) and diagnostic schemas (`diagnostics.py`).
+Core numerical and domain modules:
 
----
+| Module | Responsibility |
+|---|---|
+| `src/models.py` | Canonical typed cameras, observations, tracks, landmarks, reconstruction, and state |
+| `src/geometry/essential.py` | Essential estimation, Sampson error, RANSAC, decomposition, and pose selection |
+| `src/geometry/projection.py` | Projection, normalization, camera centers, depth, and parallax geometry |
+| `src/geometry/pose.py` | Pose/alignment utilities |
+| `src/initialization.py` | Two-view evaluation and expansion-aware initial-pair ranking |
+| `src/tracks.py` | Conflict-aware multi-view feature-track construction |
+| `src/triangulation.py` | Two-view / multi-view DLT and geometric validation |
+| `src/pnp.py` | Production PnP registration and camera-quality gates |
+| `src/bundle_adjustment.py` | Joint nonlinear optimization of cameras and landmarks |
+| `src/validation/` | Degeneracy checks and structured reconstruction diagnostics |
+| `src/evaluation.py` | Sim(3) alignment and quantitative pose/reprojection evaluation |
+| `src/visualization.py` | Reconstruction plots, diagnostic figures, and PLY export |
+| `src/colmap_io.py` | Optional COLMAP binary-model reader for external calibrated scenes |
+| `src/colmap_export.py` | Optional export to COLMAP sparse text format |
+
+### Coordinate Convention
+
+All camera poses follow the world-to-camera convention:
+
+```text
+X_camera = R @ X_world + t
+C = -R.T @ t
+x ~ K(RX + t)
+```
+
+where `C` is the camera center in world coordinates.
+
+### Reconstruction State
+
+`ReconstructionState` is the canonical state passed through the incremental
+pipeline.
+
+```text
+ReconstructionState
+├── Reconstruction
+│   ├── CameraIntrinsics
+│   ├── RegisteredCamera
+│   └── Landmark
+├── TrackManager
+├── keypoints
+├── SfMConfig
+├── diagnostics
+└── runtime statistics
+```
+
+Numerical solvers may temporarily operate on NumPy arrays, but optimized values
+are applied back to the typed reconstruction model rather than maintaining a
+second mutable reconstruction representation.
+
+## Implementation Boundaries
+
+The project deliberately combines custom geometric reasoning with established
+library components.
+
+### Implemented in the Project
+
+- Hartley-normalized 8-point Essential matrix estimation
+- Sampson-error scoring and deterministic Essential RANSAC
+- Essential decomposition and cheirality-based pose selection
+- conflict-aware feature-track construction
+- expansion-aware initial-pair selection
+- multi-view DLT triangulation
+- depth, parallax, and reprojection validation
+- incremental reconstruction state and camera-selection logic
+- PnP acceptance / rejection quality gates
+- bundle-adjustment residual construction and gauge handling
+- landmark pruning
+- view-graph analysis and reconstruction diagnostics
+- Sim(3) alignment and quantitative evaluation
+
+### Library-Assisted Components
+
+- **OpenCV**
+  - SIFT feature detection
+  - brute-force descriptor matching
+  - `solvePnPRansac`
+  - `solvePnPRefineLM`
+  - Rodrigues conversions
+  - homography estimation used as degeneracy evidence
+- **SciPy**
+  - nonlinear least-squares optimization
+- **NumPy**
+  - matrix algebra, SVD, and vectorized geometry
+- **Matplotlib**
+  - reconstruction and diagnostic figures
 
 ## Setup
 
-Requires Python 3.13+ and `uv`.
+Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/).
 
 ```powershell
 uv sync
 ```
 
-Place datasets under `data/<dataset_name>/` (e.g. `data/templeRing/`, `data/templeSparseRing/`, `data/truck/`).
+Datasets are stored locally under:
 
----
-
-## Tests & Validation
-
-Run the deterministic sanity test suite:
-
-```powershell
-# 1. Initialization unit tests
-uv run python -m tests.unit.test_initialization
-
-# 2. Synthetic geometry, PnP, and BA gauge tests
-uv run python -m tests.synthetic.run_all
-
-# 3. End-to-end reconstruction integration test
-uv run python tests/integration/test_pipeline.py
+```text
+data/<dataset_name>/
 ```
 
----
+For example:
 
-## Running Reconstruction
+```text
+data/templeRing/
+data/templeSparseRing/
+data/truck/
+```
 
-Run incremental reconstruction using `main.py`:
+## Running a Reconstruction
+
+Primary demonstration dataset:
 
 ```powershell
-# Run Middlebury TempleRing (47 images)
 uv run python main.py --dataset templeRing
+```
 
-# Run Middlebury TempleSparseRing (16 wide-baseline images)
+Wide-baseline / partial-reconstruction case:
+
+```powershell
 uv run python main.py --dataset templeSparseRing
+```
 
-# Run Tanks & Temples Truck (84 images)
+Optional larger COLMAP-calibrated scene:
+
+```powershell
 uv run python main.py --dataset truck
 ```
 
-### Useful CLI Options
-- `--skip-ba`: Disables periodic and final bundle adjustment (for ablation comparison).
-- `--skip-geometric-verification`: Disables Essential-matrix verification of pairwise matches.
-- `--no-cache`: Forces recomputation of SIFT matches instead of loading cached `.npz`.
-- `--output-label <label>`: Writes results to a custom directory under `output/<dataset>_<label>/`.
-- `--skip-colmap-export`: Skips exporting COLMAP-compatible sparse text files.
+Useful options:
 
----
+| Option | Purpose |
+|---|---|
+| `--skip-ba` | Disable bundle adjustment for an ablation |
+| `--skip-geometric-verification` | Disable Essential-matrix pair verification for an ablation |
+| `--no-cache` | Recompute descriptor matches instead of loading the cached match graph |
+| `--output-label <label>` | Write to `output/<dataset>_<label>/` |
+| `--skip-colmap-export` | Disable optional COLMAP text-model export |
+
+## Tests
+
+Run the final regression suite:
+
+```powershell
+uv run python -m tests.unit.test_initialization
+uv run python -m tests.synthetic.run_all
+uv run python tests/integration/test_pipeline.py
+```
+
+The synthetic suite covers core geometry and reconstruction invariants,
+including Essential geometry, triangulation, PnP pose recovery, bundle
+adjustment, gauge constraints, degeneracies, and disconnected view graphs.
 
 ## Outputs
 
-Each run produces artifacts in `output/<dataset>/`:
-- `metrics.txt`: Summary of registered views, landmarks, reprojection RMS, rotation errors, and camera center errors.
-- `reconstruction.json`: Serialized camera poses, 3D point coordinates, track observations, and intrinsics.
-- `diagnostics.json`: Diagnostic events, view-graph components, camera statuses, and termination reasons.
-- `reconstruction.ply`: 3D point cloud colored from original pixel intensities.
-- `colmap/sparse/0/`: COLMAP-compatible `cameras.txt`, `images.txt`, `points3D.txt`.
-- Diagnostic plots: Camera trajectory top-down view, 3D scatter plots, reprojection error histograms, and BA history curves.
+Each run writes artifacts under:
 
----
+```text
+output/<dataset>/
+```
+
+Depending on the dataset and whether reference poses are available:
+
+| Artifact | Purpose |
+|---|---|
+| `reconstruction.json` | Intrinsics, registered camera poses, landmarks, and reconstruction status |
+| `diagnostics.json` | Diagnostic events, camera statuses, rejection counts, and termination reason |
+| `metrics.json` | Machine-readable quantitative evaluation when reference poses are available |
+| `metrics.txt` | Human-readable evaluation summary |
+| `pointcloud.ply` | Colored sparse point cloud |
+| `matches_init_pair.png` | Verified correspondences for the selected initialization pair |
+| `reconstruction_3d.png` | Sparse reconstruction and camera visualization |
+| `camera_ring.png` | Estimated vs. reference camera trajectory |
+| `reproj_hist.png` | Reprojection-error distribution |
+| `ba_history.png` | Bundle-adjustment RMS history |
+| `pose_error_by_registration.png` | Pose error by camera registration order |
+| `colmap/` | Optional COLMAP-compatible sparse text model and registered images |
+
+## Dataset Roles
+
+- **Middlebury TempleRing** — primary complete reconstruction and quantitative
+  evaluation dataset.
+- **Middlebury TempleSparseRing** — controlled wide-baseline/connectivity
+  failure case used to demonstrate expansion-aware initialization and
+  structured failure diagnosis.
+- **Tanks & Temples Truck** — optional larger-scene generalization experiment
+  using a COLMAP calibration/reference reconstruction.
+- **Phone/video capture** — optional qualitative experiment without reference
+  poses.
 
 ## Optional Video Preprocessing
 
-An optional preprocessing script is provided to sample sharp, evenly spaced frames from continuous video captures:
+`extract_frames.py` is a standalone preprocessing utility for self-captured
+video. It is not part of the SfM reconstruction pipeline.
+
+Example:
 
 ```powershell
-uv run python extract_frames.py data/myvideo.mp4 data/myvideo --n-frames 70
+uv run python extract_frames.py input.mp4 data/my_capture --n-frames 70
 ```
 
-*(Note: `extract_frames.py` is a standalone capture-preparation utility and is not part of the core reconstruction pipeline.)*
+It selects sharp frames from temporal windows, downsizes them, and writes
+`f35_equiv.txt` for approximate phone-camera intrinsics.
+
+The phone-image loader uses Pillow for EXIF access. Install the optional extra
+when using that path:
+
+```powershell
+uv sync --extra phone
+```
+
+## Current Limitations
+
+The current implementation assumes:
+
+- one known shared intrinsic matrix `K`;
+- an ideal pinhole camera or pre-undistorted images;
+- a static scene;
+- sufficient feature overlap between views;
+- sparse reconstruction rather than dense multi-view stereo.
+
+Exhaustive pair matching scales quadratically with image count, and repeated
+global bundle adjustment becomes increasingly expensive on larger datasets.
